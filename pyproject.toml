@@ -1,0 +1,49 @@
+[project]
+name = "outreach-wise"
+version = "0.1.0"
+description = "Minimal, self-hosted cold email outreach: Google Sheets in, Gmail out. By Channel Wise."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Channel Wise" }]
+requires-python = ">=3.11"
+dependencies = [
+    "flask>=3.0",
+    "waitress>=3.0",
+    "httpx>=0.27",
+    "cryptography>=42",
+    "tzdata>=2024.1",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Framework :: Flask",
+    "Topic :: Communications :: Email",
+]
+
+[project.urls]
+Homepage = "https://github.com/Channel-Wise/outreach-wise"
+Issues = "https://github.com/Channel-Wise/outreach-wise/issues"
+
+[project.scripts]
+outreach-wise = "outreach_wise.__main__:main"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["outreach_wise"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
+ignore = ["E501"]  # line length is the formatter's job

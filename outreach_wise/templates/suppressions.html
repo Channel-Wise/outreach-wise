@@ -1,0 +1,36 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, csrf with context %}
+{% block title %}Suppressions{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Suppressions</h1><p>Addresses and domains that are never emailed. Unsubscribes and bounces are added automatically. {{ "{:,}".format(total) }} entries.</p></div>
+</div>
+<div class="cols">
+  <div class="card flush">
+    <div class="card-head">
+      <h2>Suppressed</h2>
+      <form method="get"><input type="search" name="q" value="{{ q }}" placeholder="Search" style="width:200px"></form>
+    </div>
+    {% if rows %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Email or domain</th><th>Reason</th><th>Added</th><th></th></tr></thead>
+      <tbody>
+      {% for s in rows %}
+        <tr>
+          <td class="mono">{{ s.value }}</td>
+          <td><span class="badge plain">{{ s.reason }}</span></td>
+          <td class="muted nowrap">{{ s.created_at | local("%b %d, %Y") }}</td>
+          <td class="num"><form method="post" action="{{ url_for('suppression_delete', suppression_id=s.id) }}" class="inline" onsubmit="return confirm('Allow emailing this again?')">{{ csrf() }}<button class="btn sm ghost">Remove</button></form></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}<div class="empty"><p>Nothing suppressed{{ " matching your search" if q }}.</p></div>{% endif %}
+  </div>
+  <form class="card" method="post" action="{{ url_for('suppression_add') }}">{{ csrf() }}
+    <div class="card-head"><div><h2>Add</h2><p>One per line. A bare domain (<code>acme.com</code>) blocks everyone there.</p></div></div>
+    <div class="field"><textarea name="values" rows="8" placeholder="jane@acme.com&#10;competitor.com" required></textarea></div>
+    <button class="btn primary">{{ icon("plus") }}Add to suppression list</button>
+  </form>
+</div>
+{% endblock %}

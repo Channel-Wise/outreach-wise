@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Unsubscribe</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="center-page">
+  <div class="center-card card" style="text-align:center">
+    {% if state == "confirm" %}
+      <h2 style="margin-bottom:8px">Unsubscribe?</h2>
+      <p class="secondary">You won't receive any more emails from {{ sender_name }}.</p>
+      <form method="post" style="margin-top:16px">
+        <button class="btn primary block">Yes, unsubscribe me</button>
+      </form>
+    {% elif state == "done" %}
+      <h2 style="margin-bottom:8px">You're unsubscribed</h2>
+      <p class="secondary">You won't hear from {{ sender_name }} again. Sorry for the interruption.</p>
+    {% else %}
+      <h2 style="margin-bottom:8px">Link not valid</h2>
+      <p class="secondary">This unsubscribe link is invalid or expired. Reply to the email with "unsubscribe" instead.</p>
+    {% endif %}
+  </div>
+</div>
+</body>
+</html>

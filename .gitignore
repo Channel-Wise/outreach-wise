@@ -1,0 +1,28 @@
+# Secrets and local data — never commit these
+.env
+.env.*
+!.env.example
+data/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite*
+client_secret*.json
+*.csv
+*.xlsx
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Editors / OS / local tooling
+.DS_Store
+.idea/
+.vscode/
+.claude/

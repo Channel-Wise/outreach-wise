@@ -1,0 +1,28 @@
+{% from "_macros.html" import logo, icon with context %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>Sign in · Outreach Wise</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+<div class="center-page">
+  <div class="center-card">
+    <div class="brand">{{ logo() }}<div><strong>Outreach Wise</strong><span>by Channel Wise</span></div></div>
+    <form class="card" method="post">
+      <input type="hidden" name="csrf" value="{{ csrf_token }}">
+      <h2 style="margin-bottom:14px">Sign in</h2>
+      {% if error %}<div class="flash error">{{ icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+      <div class="field">
+        <label for="password">Admin password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
+        <div class="hint">Set with <code>ADMIN_PASSWORD</code> in your environment.</div>
+      </div>
+      <button class="btn primary block">Sign in</button>
+    </form>
+  </div>
+</div>
+</body>
+</html>

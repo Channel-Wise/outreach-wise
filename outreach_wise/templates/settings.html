@@ -1,0 +1,101 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, csrf with context %}
+{% block title %}Settings{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Settings</h1><p>Deployment secrets live in environment variables; everything here is stored in the database.</p></div>
+</div>
+
+<div class="stack">
+  <section class="card" id="inboxes">
+    <div class="card-head">
+      <div><h2>Inboxes</h2><p>Gmail or Google Workspace accounts that send. New leads are spread across inboxes; a lead's follow-ups always come from the same inbox and thread.</p></div>
+      {% if cfg.google_configured %}<a class="btn primary" href="{{ url_for('account_connect') }}">{{ icon("plus") }}Connect Google account</a>{% endif %}
+    </div>
+    {% if not cfg.google_configured %}
+      <div class="banner info">{{ icon("info") }}<span class="grow">Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> to connect inboxes (README → Google setup). Use this redirect URI in Google Cloud: <code>{{ redirect_uri }}</code></span></div>
+    {% endif %}
+    {% if accounts %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Inbox</th><th>Status</th><th>Daily limit</th><th></th></tr></thead>
+      <tbody>
+      {% for a in accounts %}
+        <tr>
+          <td><strong>{{ a.email }}</strong><div class="muted small">Connected {{ a.created_at | local("%b %d, %Y") }}{% if a.inbox_checked_at %} · inbox checked {{ a.inbox_checked_at | local }}{% endif %}</div>
+            {% if a.last_error %}<div class="small" style="color:var(--bad)">{{ a.last_error }}</div>{% endif %}</td>
+          <td>{% if a.enabled %}{{ badge("active", "sending") }}{% else %}{{ badge("paused", "paused") }}{% endif %}</td>
+          <td colspan="2">
+            <form method="post" action="{{ url_for('account_update', account_id=a.id) }}" class="row" style="gap:8px">{{ csrf() }}
+              <input type="number" name="daily_limit" value="{{ a.daily_limit }}" min="1" max="2000" style="width:90px" aria-label="Daily limit">
+              <label class="check" style="margin:0"><input type="checkbox" name="enabled" {{ 'checked' if a.enabled }}> Enabled</label>
+              <button class="btn sm">Save</button>
+              {% if a.last_error %}<a class="btn sm" href="{{ url_for('account_connect') }}">Reconnect</a>{% endif %}
+              <button class="btn sm ghost danger-text" formaction="{{ url_for('account_delete', account_id=a.id) }}" onclick="return confirm('Remove this inbox? Sequences already started from it will stop.')">Remove</button>
+            </form>
+          </td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% elif cfg.google_configured %}
+      <div class="empty" style="padding:20px"><p>No inbox connected yet. Dry runs work without one.</p></div>
+    {% endif %}
+    <p class="muted small" style="margin:12px 0 0">Tip: start new inboxes at 20–40 emails/day and raise slowly. Google's hard caps are about 500/day (Gmail) and 2,000/day (Workspace) — cold email should stay far below.</p>
+  </section>
+
+  <form class="card" id="sheet" method="post" action="{{ url_for('settings_save') }}">{{ csrf() }}<input type="hidden" name="section" value="sheet">
+    <div class="card-head"><div><h2>Lead source</h2><p>A Google Sheet with a header row. It is read with the first connected inbox's Google account, which needs access to the sheet.</p></div>
+      {% if settings.sheet_url %}<button class="btn" formaction="{{ url_for('sync_leads') }}" formnovalidate>{{ icon("sync") }}Sync now</button>{% endif %}
+    </div>
+    <div class="field"><label for="sheet_url">Sheet URL or ID</label><input id="sheet_url" type="text" name="sheet_url" value="{{ settings.sheet_url }}" placeholder="https://docs.google.com/spreadsheets/d/…"></div>
+    <div class="fields-3">
+      <div class="field"><label for="sheet_tab">Tab name</label><input id="sheet_tab" type="text" name="sheet_tab" value="{{ settings.sheet_tab }}"></div>
+      <div class="field"><label for="sheet_email_column">Email column header</label><input id="sheet_email_column" type="text" name="sheet_email_column" value="{{ settings.sheet_email_column }}"></div>
+      <div class="field"><label for="sync_interval_minutes">Sync every (minutes)</label><input id="sync_interval_minutes" type="number" name="sync_interval_minutes" value="{{ settings.sync_interval_minutes }}" min="5" max="1440"></div>
+    </div>
+    <div class="row between">
+      <span class="muted small">{% if last_sync %}Last sync {{ last_sync.at | local }} · {{ last_sync.rows }} rows, {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates, {{ last_sync.invalid }} invalid{% else %}Not synced yet{% endif %}</span>
+      <button class="btn primary">Save</button>
+    </div>
+  </form>
+
+  <form class="card" id="sending" method="post" action="{{ url_for('settings_save') }}">{{ csrf() }}<input type="hidden" name="section" value="sending">
+    <div class="card-head"><div><h2>Sending schedule &amp; limits</h2><p>Emails only go out inside the window, spread evenly across it.</p></div></div>
+    <div class="fields-3">
+      <div class="field"><label for="timezone">Timezone</label>
+        <select id="timezone" name="timezone">{% for z in timezones %}<option {{ 'selected' if z == settings.timezone }}>{{ z }}</option>{% endfor %}</select></div>
+      <div class="field"><label for="window_start">Window starts</label><input id="window_start" type="time" name="window_start" value="{{ settings.window_start }}" required></div>
+      <div class="field"><label for="window_end">Window ends</label><input id="window_end" type="time" name="window_end" value="{{ settings.window_end }}" required></div>
+    </div>
+    <div class="field"><label>Sending days</label>
+      <div class="days">{% for name in weekdays %}<label><input type="checkbox" name="send_days" value="{{ loop.index0 }}" {{ 'checked' if loop.index0 in settings.send_days }}>{{ name }}</label>{% endfor %}</div></div>
+    <div class="fields-3">
+      <div class="field"><label for="daily_limit">Default daily limit per new inbox</label><input id="daily_limit" type="number" name="daily_limit" value="{{ settings.daily_limit }}" min="1" max="2000"><div class="hint">Each inbox has its own limit above.</div></div>
+      <div class="field"><label for="min_gap_seconds">Minimum seconds between sends</label><input id="min_gap_seconds" type="number" name="min_gap_seconds" value="{{ settings.min_gap_seconds }}" min="10" max="3600"></div>
+      <div class="field"><label for="inbox_poll_minutes">Check inboxes every (minutes)</label><input id="inbox_poll_minutes" type="number" name="inbox_poll_minutes" value="{{ settings.inbox_poll_minutes }}" min="1" max="60"><div class="hint">Threads are also re-checked right before each follow-up.</div></div>
+    </div>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary">Save</button></div>
+  </form>
+
+  <form class="card" id="email" method="post" action="{{ url_for('settings_save') }}">{{ csrf() }}<input type="hidden" name="section" value="email">
+    <div class="card-head"><div><h2>Sender &amp; footer</h2><p>Applied to every campaign.</p></div></div>
+    <div class="field"><label for="from_name">From name</label><input id="from_name" type="text" name="from_name" value="{{ settings.from_name }}" placeholder="e.g. Orhun from Channel Wise" maxlength="100"></div>
+    <div class="field"><label for="footer">Footer appended to every email</label>
+      <textarea id="footer" name="footer" rows="4">{{ settings.footer }}</textarea>
+      <div class="hint">
+        Supports variables. Every email also carries a <code>List-Unsubscribe</code> header (Gmail's one-click "Unsubscribe" link){% if cfg.is_public %}, and <code>{{ '{{unsubscribe_url}}' }}</code> links to your public unsubscribe page{% else %}; <code>{{ '{{unsubscribe_url}}' }}</code> only works for recipients once <code>BASE_URL</code> is a public https address{% endif %}.
+        Replies containing "unsubscribe" or "remove me" are honored automatically. Include your postal address if CAN-SPAM applies to you.
+      </div>
+    </div>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary">Save</button></div>
+  </form>
+
+  <section class="card" id="danger">
+    <div class="card-head"><div><h2>Emergency stop</h2><p>Pauses every campaign, live and dry run, until you resume. Inbox checks for replies keep running.</p></div>
+      <form method="post" action="{{ url_for('toggle_pause') }}" class="inline">{{ csrf() }}<input type="hidden" name="next" value="{{ url_for('settings_page') }}#danger">
+        {% if settings.sending_paused %}<button class="btn">{{ icon("play") }}Resume sending</button>{% else %}<button class="btn danger">{{ icon("pause") }}Pause all sending</button>{% endif %}
+      </form>
+    </div>
+  </section>
+</div>
+{% endblock %}
