@@ -298,4 +298,3 @@ Please report vulnerabilities privately; see [SECURITY.md](SECURITY.md).
 ## License
 
 [MIT](LICENSE) © Channel Wise
-# .github
