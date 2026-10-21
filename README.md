@@ -68,7 +68,12 @@ flowchart LR
 ```bash
 git clone https://github.com/Channel-Wise/outreach-wise.git
 cd outreach-wise
-cp .env.example .env    # then set SECRET_KEY and ADMIN_PASSWORD (see below)
+cp .env.example .env
+```
+
+Set `SECRET_KEY` and `ADMIN_PASSWORD` in `.env` (see below), then:
+
+```bash
 docker compose up -d
 ```
 
@@ -79,8 +84,14 @@ Open <http://localhost:8000> and sign in with `ADMIN_PASSWORD`.
 ```bash
 git clone https://github.com/Channel-Wise/outreach-wise.git
 cd outreach-wise
-cp .env.example .env    # set SECRET_KEY and ADMIN_PASSWORD
-uv sync                 # or: python -m venv .venv && .venv/bin/pip install -e .
+cp .env.example .env
+```
+
+Set `SECRET_KEY` and `ADMIN_PASSWORD` in `.env`, then install and run with
+[uv](https://docs.astral.sh/uv/) (or `python -m venv .venv && .venv/bin/pip install -e .`):
+
+```bash
+uv sync
 uv run outreach-wise serve
 ```
 
@@ -92,10 +103,11 @@ python -c "import secrets; print(secrets.token_urlsafe(48))"
 
 ### Try it without Google
 
-You can explore the full flow before setting up any Google credentials:
+You can explore the full flow before setting up any Google credentials. This loads 60 fake
+leads on `example.com`, which is never deliverable:
 
 ```bash
-uv run outreach-wise demo     # 60 fake leads on example.com (never deliverable)
+uv run outreach-wise demo
 ```
 
 Then create a campaign, enroll the leads and start it. In dry-run mode the worker goes through
@@ -243,11 +255,13 @@ Outreach Wise sends through your real inboxes, so your domain's reputation is on
 
 ## Development
 
+`uv sync` installs the dev dependencies too. Tests use a fake Google client, so nothing is
+ever sent:
+
 ```bash
-uv sync                      # installs dev dependencies too
-uv run pytest                # tests use a fake Google client; nothing is sent
+uv sync
+uv run pytest
 uv run ruff check . && uv run ruff format --check .
-uv run outreach-wise demo    # fake leads for manual testing
 ```
 
 ```

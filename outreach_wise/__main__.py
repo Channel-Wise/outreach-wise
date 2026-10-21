@@ -75,7 +75,12 @@ def demo(cfg, count: int) -> None:
     db.log_event(conn, "sync", f"Demo data: {created} fake leads added (example.com, never sent live)")
     conn.commit()
     conn.close()
-    print(f"Added {created} demo leads ({updated} updated). Some have no first name, to show fallbacks.")
+    existing = len(leads) - created
+    print(
+        f"Added {created} demo leads"
+        + (f" ({existing} were already there)" if existing else "")
+        + f". Database: {cfg.database_path}"
+    )
 
 
 def main(argv: list[str] | None = None) -> None:

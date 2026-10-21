@@ -22,7 +22,12 @@ reliable, safer or simpler, not bigger.
 
 ```bash
 uv sync
-cp .env.example .env   # set SECRET_KEY and ADMIN_PASSWORD
+cp .env.example .env
+```
+
+Set `SECRET_KEY` and `ADMIN_PASSWORD` in `.env`, then load fake leads and start the app:
+
+```bash
 uv run outreach-wise demo
 uv run outreach-wise serve
 ```
