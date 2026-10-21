@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, mode_badge, csrf with context %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Dashboard</h1>
+    <p>
+      {% if settings.sending_paused %}Sending is paused.
+      {% elif in_window %}Sending window is open now ({{ settings.window_start }}–{{ settings.window_end }} {{ settings.timezone }}).
+      {% else %}Outside the sending window ({{ settings.window_start }}–{{ settings.window_end }} {{ settings.timezone }}, {{ settings.send_days | days }}).{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    <form method="post" action="{{ url_for('toggle_pause') }}" class="inline">{{ csrf() }}
+      {% if settings.sending_paused %}<button class="btn">{{ icon("play") }}Resume sending</button>
+      {% else %}<button class="btn" title="Emergency stop for every campaign">{{ icon("pause") }}Pause all sending</button>{% endif %}
+    </form>
+    <a class="btn primary" href="{{ url_for('campaign_list') }}">{{ icon("campaigns") }}Campaigns</a>
+  </div>
+</div>
+
+{% set setup_done = [inbox_count > 0, totals.leads > 0, campaign_rows | length > 0, campaign_rows | selectattr('campaign.mode', 'equalto', 'live') | list | length > 0] %}
+{% if not setup_done[3] %}
+<div class="card" style="margin-bottom:16px">
+  <div class="card-head"><div><h2>Get started</h2><p>Everything runs in dry-run mode until you explicitly approve a campaign.</p></div></div>
+  <ol class="steps-list">
+    <li class="{{ 'done' if setup_done[0] }}"><strong>Connect an inbox</strong> — <a href="{{ url_for('settings_page') }}#inboxes">Settings → Inboxes</a>. Needs Google OAuth credentials (see README). Optional for dry runs.</li>
+    <li class="{{ 'done' if setup_done[1] }}"><strong>Load leads</strong> — add your Google Sheet in <a href="{{ url_for('settings_page') }}#sheet">Settings → Lead source</a>, or run <code>outreach-wise demo</code> for fake leads.</li>
+    <li class="{{ 'done' if setup_done[2] }}"><strong>Create a campaign</strong> — write the sequence, enroll leads and start it as a dry run.</li>
+    <li class="{{ 'done' if setup_done[3] }}"><strong>Preview &amp; go live</strong> — review real renders, then approve live sending.</li>
+  </ol>
+</div>
+{% endif %}
+
+<div class="stats">
+  <div class="stat"><div class="label">Leads</div><div class="value">{{ "{:,}".format(totals.leads) }}</div><div class="sub">+{{ totals.new_today }} today</div></div>
+  <div class="stat">
+    <div class="label">Sent today</div>
+    <div class="value">{{ totals.sent_today }}<span class="muted" style="font-size:15px;font-weight:500"> / {{ totals.capacity }}</span></div>
+    <div class="meter" role="img" aria-label="{{ totals.sent_today }} of {{ totals.capacity }} daily capacity used"><span style="width:{{ (100 * totals.sent_today / totals.capacity) | round(1) if totals.capacity else 0 }}%"></span></div>
+  </div>
+  <div class="stat"><div class="label">Reply rate</div><div class="value">{{ totals.reply_rate | pct }}</div><div class="sub">{{ totals.replied }} of {{ totals.reached }} reached</div></div>
+  <div class="stat"><div class="label">Unsubscribed</div><div class="value">{{ totals.unsubscribed }}</div><div class="sub">auto-suppressed</div></div>
+  <div class="stat"><div class="label">Bounced</div><div class="value">{{ totals.bounced }}</div><div class="sub">auto-suppressed</div></div>
+</div>
+
+<div class="card" style="margin-bottom:16px">
+  <div class="card-head">
+    <div><h2>Emails sent per day</h2><p>Live sends, last 14 days. Hover a day for replies.</p></div>
+    <span class="muted small">{{ chart | sum(attribute='sent') }} sent · {{ chart | sum(attribute='replies') }} replies</span>
+  </div>
+  <div class="chart" role="img" aria-label="Column chart of live emails sent per day over the last 14 days">
+    <div class="chart-y">
+      {% for tick in [chart_top, chart_top // 2, 0] %}<span style="bottom:{{ 100 * tick / chart_top }}%">{{ tick }}</span>{% endfor %}
+    </div>
+    <div class="chart-plot">
+      <div class="chart-grid">
+        <i style="bottom:100%"></i><i style="bottom:50%"></i><i class="base" style="bottom:0"></i>
+      </div>
+      <div class="chart-cols">
+        {% for day in chart %}
+        <div class="chart-col" tabindex="0" aria-label="{{ day.weekday }} {{ day.label }}: {{ day.sent }} sent, {{ day.replies }} replies">
+          <div class="bar {{ 'zero' if not day.sent }}" style="height:{{ 100 * day.sent / chart_top }}%"></div>
+          <div class="chart-tip"><b>{{ day.weekday }} {{ day.label }}</b><br>{{ day.sent }} sent · {{ day.replies }} repl{{ 'y' if day.replies == 1 else 'ies' }}</div>
+        </div>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+  <div class="chart-x">{% for day in chart %}<span>{{ day.label[-2:] if not loop.first and not loop.last else day.label }}</span>{% endfor %}</div>
+  <details style="margin-top:12px">
+    <summary class="small">Show as table</summary>
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Day</th><th class="num">Sent</th><th class="num">Replies</th></tr></thead>
+      <tbody>{% for day in chart | reverse %}<tr><td>{{ day.weekday }} {{ day.label }}</td><td class="num">{{ day.sent }}</td><td class="num">{{ day.replies }}</td></tr>{% endfor %}</tbody>
+    </table></div>
+  </details>
+</div>
+
+<div class="cols">
+  <div class="card flush">
+    <div class="card-head"><div><h2>Campaigns</h2></div><a class="btn sm" href="{{ url_for('campaign_list') }}">{{ icon("plus") }}New</a></div>
+    {% if campaign_rows %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Campaign</th><th>Status</th><th class="num">Enrolled</th><th class="num">Sent</th><th class="num">Replies</th><th class="num">Reply rate</th></tr></thead>
+      <tbody>
+      {% for row in campaign_rows %}
+        <tr>
+          <td><a href="{{ url_for('campaign', campaign_id=row.campaign.id) }}"><strong>{{ row.campaign.name }}</strong></a></td>
+          <td class="nowrap">{{ mode_badge(row.campaign) }} {{ badge(row.campaign.status) }}</td>
+          <td class="num">{{ row.stats.enrolled }}</td>
+          <td class="num">{{ row.stats.sent }}</td>
+          <td class="num">{{ row.stats.replied }}</td>
+          <td class="num">{{ row.stats.reply_rate | pct }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+      <div class="empty"><h3>No campaigns yet</h3><p>Create one to start a dry run.</p></div>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <div class="card-head"><div><h2>Latest replies</h2><p>Sequences stop automatically on reply.</p></div></div>
+    {% if replies %}
+    <ul class="list">
+      {% for r in replies %}
+      <li>
+        <div class="row between">
+          <span>{% if r.lead_id %}<a href="{{ url_for('lead', lead_id=r.lead_id) }}">{{ r.from_email }}</a>{% else %}{{ r.from_email }}{% endif %} {{ badge(r.kind) }}</span>
+          {% if r.account_email and r.thread_id %}<a class="small" target="_blank" rel="noopener" href="https://mail.google.com/mail/?authuser={{ r.account_email | urlencode }}#all/{{ r.thread_id }}">Open in Gmail</a>{% endif %}
+        </div>
+        <div class="quote small truncate">{{ r.snippet }}</div>
+        <div class="meta">{{ r.received_at | local }}</div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+      <div class="empty" style="padding:20px 0"><p>No replies yet.</p></div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card" style="margin-top:16px">
+  <div class="card-head"><div><h2>Recent activity</h2></div><a class="btn sm ghost" href="{{ url_for('activity') }}">View all</a></div>
+  {% if events %}
+  <ul class="list">
+    {% for e in events %}
+    <li class="row"><span class="muted small nowrap" style="width:110px">{{ e.created_at | local }}</span>{{ badge(e.level, e.kind) }}<span>{{ e.message }}</span></li>
+    {% endfor %}
+  </ul>
+  {% else %}<p class="muted">Nothing yet.</p>{% endif %}
+</div>
+{% endblock %}

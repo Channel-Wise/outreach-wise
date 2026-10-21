@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, pager, csrf with context %}
+{% block title %}Leads{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Leads</h1>
+    <p>
+      {% if last_sync %}Last sheet sync {{ last_sync.at | local }}: {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates skipped.
+      {% elif settings.sheet_url %}Not synced yet.
+      {% else %}No Google Sheet configured — <a href="{{ url_for('settings_page') }}#sheet">add one in Settings</a>.{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    {% if settings.sheet_url %}
+    <form method="post" action="{{ url_for('sync_leads') }}" class="inline">{{ csrf() }}<button class="btn">{{ icon("sync") }}Sync now</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="row between" style="margin-bottom:14px">
+  <div class="pills">
+    <a href="{{ url_for('leads', q=q) }}" class="{{ 'active' if not status }}">All<span class="count">{{ "{:,}".format(counts.values() | sum) }}</span></a>
+    {% for s in statuses %}
+      <a href="{{ url_for('leads', status=s, q=q) }}" class="{{ 'active' if status == s }}">{{ s | capitalize }}<span class="count">{{ "{:,}".format(counts.get(s, 0)) }}</span></a>
+    {% endfor %}
+  </div>
+  <form method="get" class="row" style="gap:6px">
+    {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
+    <input type="search" name="q" value="{{ q }}" placeholder="Search email or any field" style="width:260px">
+  </form>
+</div>
+
+<div class="card flush">
+  {% if rows %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Email</th>{% for c in columns %}<th>{{ c.replace('_', ' ') }}</th>{% endfor %}<th>Status</th><th>Added</th></tr></thead>
+    <tbody>
+    {% for lead in rows %}{% set f = lead.fields | fields %}
+      <tr>
+        <td><a href="{{ url_for('lead', lead_id=lead.id) }}">{{ lead.email }}</a></td>
+        {% for c in columns %}<td class="truncate" style="max-width:220px">{{ f.get(c, '') }}</td>{% endfor %}
+        <td>{{ badge(lead.status) }}</td>
+        <td class="nowrap muted">{{ lead.created_at | local("%b %d") }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ pager(page, pages, 'leads') }}
+  {% else %}
+  <div class="empty">
+    <h3>{{ "No matching leads" if q or status else "No leads yet" }}</h3>
+    <p>{% if not (q or status) %}Connect a Google Sheet in Settings, or run <code>outreach-wise demo</code> to load fake leads for a dry run.{% endif %}</p>
+  </div>
+  {% endif %}
+</div>
+<p class="muted small" style="margin-top:10px">Every sheet column becomes a template variable, e.g. <code>{{ '{{first_name}}' }}</code>. Leads are unique by email; the sheet owns lead data, Outreach Wise owns status.</p>
+{% endblock %}

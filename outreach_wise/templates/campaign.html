@@ -1,0 +1,200 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, mode_badge, csrf with context %}
+{% block title %}{{ campaign.name }}{% endblock %}
+{% block content %}
+{% set dry = campaign.mode == "dry_run" %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('campaign_list') }}">← Campaigns</a></p>
+    <h1>{{ campaign.name }}</h1>
+    <p class="row" style="gap:6px">{{ mode_badge(campaign) }}{{ badge(campaign.status) }}{% if campaign.auto_enroll %}<span class="badge plain">auto-enroll on</span>{% endif %}</p>
+  </div>
+  <div class="actions">
+    <form method="post" action="{{ url_for('campaign_status', campaign_id=campaign.id) }}" class="inline">{{ csrf() }}
+      {% if campaign.status == "draft" %}<button class="btn" name="action" value="start">{{ icon("play") }}Start dry run</button>
+      {% elif campaign.status == "active" %}<button class="btn" name="action" value="pause">{{ icon("pause") }}Pause</button>
+      {% else %}<button class="btn" name="action" value="resume">{{ icon("play") }}Resume</button>{% endif %}
+    </form>
+    <a class="btn primary" href="{{ url_for('campaign_preview', campaign_id=campaign.id) }}">{{ icon("eye") }}{{ "Preview & go live" if dry else "Preview emails" }}</a>
+  </div>
+</div>
+
+{% if dry %}
+<div class="banner dry">{{ icon("info") }}<span class="grow"><strong>Dry run.</strong> The whole pipeline runs on schedule (window, limits, A/B split, follow-ups, stop rules) but no email leaves. When it looks right, approve it on the preview page; dry-run history is then discarded and the sequence restarts for real.</span></div>
+{% else %}
+<div class="banner live">{{ icon("mail") }}<span class="grow"><strong>Live</strong> since {{ campaign.approved_at | local }}. Real emails go out within your sending window and daily limits.</span></div>
+{% endif %}
+
+<div class="stats">
+  <div class="stat"><div class="label">Enrolled</div><div class="value">{{ stats.enrolled }}</div><div class="sub">{{ stats.active }} in progress · {{ stats.completed }} finished</div></div>
+  <div class="stat"><div class="label">{{ "Would have sent" if dry else "Sent" }}</div><div class="value">{{ stats.sent }}</div><div class="sub">to {{ stats.reached }} leads{% if stats.failed %} · {{ stats.failed }} failed{% endif %}</div></div>
+  <div class="stat"><div class="label">Replies</div><div class="value">{{ stats.replied }}</div><div class="sub">{{ stats.reply_rate | pct }} reply rate</div></div>
+  <div class="stat"><div class="label">Bounced</div><div class="value">{{ stats.bounced }}</div><div class="sub">{{ stats.unsubscribed }} unsubscribed</div></div>
+  <div class="stat"><div class="label">Stopped</div><div class="value">{{ stats.stopped }}</div><div class="sub">suppressed, missing data…</div></div>
+</div>
+
+{% set tests = ab | rejectattr("verdict", "equalto", "") | list %}
+{% if tests %}
+<div class="card flush" style="margin-bottom:16px">
+  <div class="card-head"><div><h2>A/B results</h2><p>Leads are split evenly between active variants. A reply counts for the last email sent before it.{% if dry %} Replies only exist once live.{% endif %}</p></div></div>
+  {% for t in tests %}
+  <div style="padding:0 18px 4px"><h3>{{ "First email" if t.position == 1 else "Follow-up " ~ (t.position - 1) }}</h3></div>
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Variant</th><th>Subject</th><th class="num">Sent</th><th class="num">Replies</th><th style="width:28%">Reply rate</th></tr></thead>
+    <tbody>
+    {% set top_rate = t.variants | map(attribute="rate") | max %}
+    {% for v in t.variants %}
+      <tr>
+        <td class="nowrap"><strong>{{ v.label }}</strong>{% if v.winner %} <span class="badge good">winner</span>{% endif %}{% if not v.active %} <span class="badge">inactive</span>{% endif %}</td>
+        <td class="truncate">{{ v.subject or "Re: (same thread)" }}</td>
+        <td class="num">{{ v.sent }}</td>
+        <td class="num">{{ v.replies }}</td>
+        <td><div class="row" style="gap:8px;flex-wrap:nowrap"><div class="meter" style="flex:1;margin:0"><span style="width:{{ (100 * v.rate / top_rate) if top_rate else 0 }}%"></span></div><span class="num small" style="width:48px">{{ v.rate | pct }}</span></div></td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  <p class="small secondary" style="padding:8px 18px 14px;margin:0">{{ t.verdict }}</p>
+  {% endfor %}
+</div>
+{% endif %}
+
+<div class="cols">
+  <div id="sequence">
+    <div class="row between" style="margin-bottom:10px">
+      <h2>Sequence</h2>
+      <span class="muted small">Plain-text emails · your footer from Settings is appended</span>
+    </div>
+    <div class="card" style="margin-bottom:12px;padding:12px 14px">
+      <div class="small secondary" style="margin-bottom:8px">Variables from your leads — click to insert. Use <code>{{ '{{name|fallback}}' }}</code> for leads with missing data; leads missing a variable without fallback are skipped, never sent a broken email.</div>
+      <div class="chips">{% for v in variables %}<button type="button" class="chip" data-var="{{ v }}">{{ '{{' ~ v ~ '}}' }}</button>{% endfor %}</div>
+    </div>
+
+    {% for step in steps %}
+      {% if not loop.first %}
+      <form class="wait" method="post" action="{{ url_for('step_update', step_id=step.id) }}">{{ csrf() }}
+        Wait <input type="number" name="delay_days" min="0" max="365" value="{{ step.delay_days }}" aria-label="Days to wait"> day{{ 's' if step.delay_days != 1 }} without a reply, then
+        <button class="btn sm ghost">Save</button>
+      </form>
+      {% endif %}
+      <div class="step" id="step-{{ step.id }}">
+        <div class="step-head">
+          <span class="step-num">{{ step.position }}</span>
+          <h3>{{ "First email" if step.position == 1 else "Follow-up " ~ (step.position - 1) }}</h3>
+          {% if step.variants | length > 1 %}<span class="badge accent plain">A/B · {{ step.variants | length }} variants</span>{% endif %}
+          <span class="spacer"></span>
+          <form method="post" action="{{ url_for('variant_add', step_id=step.id) }}" class="inline">{{ csrf() }}<button class="btn sm ghost">{{ icon("plus") }}A/B variant</button></form>
+          {% if steps | length > 1 %}
+          <form method="post" action="{{ url_for('step_delete', step_id=step.id) }}" class="inline" onsubmit="return confirm('Delete this step?')">{{ csrf() }}<button class="btn sm ghost danger-text">Delete step</button></form>
+          {% endif %}
+        </div>
+        <div class="step-body">
+          {% for v in step.variants %}
+          <form class="variant {{ 'inactive' if not v.active }}" id="variant-{{ v.id }}" method="post" action="{{ url_for('variant_update', variant_id=v.id) }}">{{ csrf() }}
+            <div class="variant-head">
+              <span class="variant-label">Variant {{ v.label }}</span>
+              {% if step.variants | length > 1 %}<label class="check" style="margin:0"><input type="checkbox" name="active" {{ 'checked' if v.active }}> Active</label>
+              {% else %}<input type="hidden" name="active" value="on">{% endif %}
+              <span class="spacer"></span>
+              {% if step.variants | length > 1 %}<button class="btn sm ghost danger-text" formaction="{{ url_for('variant_delete', variant_id=v.id) }}" formnovalidate onclick="return confirm('Delete variant {{ v.label }}?')">Delete</button>{% endif %}
+              <button class="btn sm primary">Save</button>
+            </div>
+            <div class="field">
+              <label for="subject-{{ v.id }}">Subject</label>
+              <input id="subject-{{ v.id }}" type="text" name="subject" value="{{ v.subject }}" data-insert maxlength="250"
+                placeholder="{{ 'Subject line' if step.position == 1 else 'Leave empty to reply in the same thread (Re: …)' }}" {{ 'required' if step.position == 1 }}>
+            </div>
+            <div class="field" style="margin:0">
+              <label for="body-{{ v.id }}">Body</label>
+              <textarea id="body-{{ v.id }}" name="body" rows="9" required data-insert>{{ v.body }}</textarea>
+            </div>
+          </form>
+          {% endfor %}
+        </div>
+      </div>
+    {% endfor %}
+    <form method="post" action="{{ url_for('step_add', campaign_id=campaign.id) }}" style="margin-top:12px">{{ csrf() }}
+      <button class="btn block">{{ icon("plus") }}Add follow-up</button>
+    </form>
+    <p class="muted small" style="margin-top:8px">Follow-ups stop automatically when the lead replies, bounces or unsubscribes. Out-of-office replies don't stop the sequence.</p>
+  </div>
+
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><div><h2>Enroll leads</h2><p>{{ "{:,}".format(eligible) }} eligible: never contacted, not suppressed, not in another active campaign.</p></div></div>
+      <form method="post" action="{{ url_for('campaign_enroll', campaign_id=campaign.id) }}">{{ csrf() }}
+        <div class="field"><label for="limit">How many</label><input id="limit" type="number" name="limit" min="1" placeholder="All {{ eligible }}"></div>
+        {% if eligible_contacted > eligible %}
+        <div class="field"><label class="check"><input type="checkbox" name="include_contacted"> Also include {{ eligible_contacted - eligible }} previously contacted leads who never replied</label></div>
+        {% endif %}
+        <button class="btn primary block" {{ 'disabled' if not eligible_contacted }}>Enroll leads</button>
+      </form>
+      <p class="muted small" style="margin:10px 0 0">Enrolling only queues leads; daily limits decide how fast they're emailed.</p>
+    </div>
+
+    <form class="card" method="post" action="{{ url_for('campaign_settings', campaign_id=campaign.id) }}">{{ csrf() }}
+      <div class="card-head"><h2>Campaign settings</h2></div>
+      <div class="field"><label for="name">Name</label><input id="name" type="text" name="name" value="{{ campaign.name }}" maxlength="120"></div>
+      <div class="field"><label class="check"><input type="checkbox" name="auto_enroll" {{ 'checked' if campaign.auto_enroll }}> Auto-enroll new leads after each sheet sync (while active)</label></div>
+      <div class="field">
+        <label for="start_at">Don't send before</label>
+        <input id="start_at" type="datetime-local" name="start_at" value="{{ start_local }}">
+        <div class="hint">Optional. In {{ settings.timezone }}. Sends still follow the sending window.</div>
+      </div>
+      <button class="btn">Save settings</button>
+    </form>
+
+    {% if stop_reasons %}
+    <div class="card">
+      <div class="card-head"><h2>Why leads stopped</h2></div>
+      <ul class="list">{% for r in stop_reasons %}<li class="row between"><span class="small">{{ r.stop_reason or "—" }}</span><strong class="num">{{ r.n }}</strong></li>{% endfor %}</ul>
+    </div>
+    {% endif %}
+
+    <form class="card" method="post" action="{{ url_for('campaign_delete', campaign_id=campaign.id) }}" onsubmit="return confirm('Delete this campaign and its dry-run history?')">{{ csrf() }}
+      <div class="card-head"><div><h2>Delete campaign</h2><p>{{ "Only possible before any real email was sent. Pause instead to keep history." if not dry else "Removes the campaign and its dry-run history." }}</p></div></div>
+      <button class="btn ghost danger-text" {{ 'disabled' if not dry }}>Delete campaign</button>
+    </form>
+  </div>
+</div>
+
+<div class="card flush" style="margin-top:16px">
+  <div class="card-head"><div><h2>{{ "Dry-run log" if dry else "Recent emails" }}</h2><p>Latest 15.</p></div></div>
+  {% if messages %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>When</th><th>Lead</th><th>Step</th><th>Subject</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for m in messages %}
+      <tr>
+        <td class="nowrap muted">{{ (m.sent_at or m.created_at) | local }}</td>
+        <td><a href="{{ url_for('lead', lead_id=m.lead_id) }}">{{ m.to_email }}</a></td>
+        <td>{{ m.position }}{{ m.label }}</td>
+        <td class="truncate">{{ m.subject }}</td>
+        <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <div class="empty" style="padding:24px"><p>{{ "Start the dry run and enroll leads — the worker picks them up within your sending window." if campaign.status != "active" else "Nothing yet. The worker sends within your sending window (" ~ settings.window_start ~ "–" ~ settings.window_end ~ " " ~ settings.timezone ~ ")." }}</p></div>
+  {% endif %}
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+  // Insert {{variable}} at the cursor of the last focused subject/body field.
+  let target = null;
+  document.querySelectorAll("[data-insert]").forEach((el) => el.addEventListener("focus", () => (target = el)));
+  document.querySelectorAll(".chip[data-var]").forEach((chip) =>
+    chip.addEventListener("click", () => {
+      if (!target) return;
+      const text = "{" + "{" + chip.dataset.var + "}" + "}";
+      const start = target.selectionStart ?? target.value.length;
+      const end = target.selectionEnd ?? start;
+      target.setRangeText(text, start, end, "end");
+      target.focus();
+    })
+  );
+</script>
+{% endblock %}

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, mode_badge, csrf with context %}
+{% block title %}Preview · {{ campaign.name }}{% endblock %}
+
+{% macro mail(render) -%}
+<div class="mail {{ 'error' if render.error }}">
+  <div class="mail-head">
+    <div class="muted small">To {{ render.email }}{% if render.threaded %} · reply in the same thread{% endif %}</div>
+    {% if not render.error %}<div class="subject">{{ render.subject }}</div>{% endif %}
+  </div>
+  <pre class="mail-body">{{ render.error and ("Would be skipped: " ~ render.error) or render.body }}</pre>
+</div>
+{%- endmacro %}
+
+{% block content %}
+{% set dry = campaign.mode == "dry_run" %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('campaign', campaign_id=campaign.id) }}">← {{ campaign.name }}</a></p>
+    <h1>Preview{{ " & approve" if dry }}</h1>
+    <p>Every variant rendered with real lead data, exactly as it will be sent (plain text, footer included).</p>
+  </div>
+  <div class="actions">{{ mode_badge(campaign) }}</div>
+</div>
+
+{% if preview.affected %}
+<div class="banner warn">{{ icon("alert") }}<span class="grow">
+  <strong>{{ preview.affected }} of {{ preview.enrolled }} enrolled leads are missing data</strong> used without a fallback:
+  {% for name, n in preview.missing.items() %}<code>{{ '{{' ~ name ~ '}}' }}</code> ({{ n }}){{ ", " if not loop.last }}{% endfor %}.
+  They will be skipped. Add a fallback like <code>{{ '{{first_name|there}}' }}</code> to reach them.</span></div>
+{% elif preview.enrolled %}
+<div class="flash success">{{ icon("check") }}<span>All {{ preview.enrolled }} enrolled leads have every variable the templates need.</span></div>
+{% else %}
+<div class="banner info">{{ icon("info") }}<span>No leads enrolled yet — showing eligible leads as samples.</span></div>
+{% endif %}
+
+<div class="cols">
+  <div class="stack">
+    {% for step in preview.steps %}
+    <div class="card">
+      <div class="card-head"><div>
+        <h2>{{ step.position }}. {{ "First email" if step.position == 1 else "Follow-up " ~ (step.position - 1) }}</h2>
+        <p>{{ "Sent first" if step.position == 1 else "Sent " ~ step.delay_days ~ " day" ~ ("s" if step.delay_days != 1) ~ " after the previous email, if no reply" }}</p>
+      </div></div>
+      {% for v in step.variants %}
+        <div style="margin-bottom:12px">
+          <div class="row" style="margin-bottom:6px"><span class="variant-label">Variant {{ v.label }}</span>{% if not v.active %}<span class="badge">inactive</span>{% endif %}</div>
+          {% if v.renders %}
+            {{ mail(v.renders[0]) }}
+            {% if v.renders | length > 1 %}
+            <details style="margin-top:8px"><summary class="small">{{ v.renders | length - 1 }} more sample{{ 's' if v.renders | length > 2 }}</summary>
+              <div class="stack">{% for r in v.renders[1:] %}{{ mail(r) }}{% endfor %}</div>
+            </details>
+            {% endif %}
+          {% else %}<p class="muted">No leads to preview with yet.</p>{% endif %}
+        </div>
+      {% endfor %}
+    </div>
+    {% endfor %}
+  </div>
+
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><h2>How it will send</h2></div>
+      <table class="table"><tbody>
+        <tr><td class="muted nowrap">Enrolled leads</td><td class="num">{{ preview.enrolled }}</td></tr>
+        <tr><td class="muted nowrap">Inboxes</td><td>{% for a in accounts %}<div>{{ a.email }} <span class="muted">· {{ a.daily_limit }}/day</span></div>{% else %}<span style="color:var(--bad)">none connected</span>{% endfor %}</td></tr>
+        <tr><td class="muted nowrap">Window</td><td>{{ settings.window_start }}–{{ settings.window_end }} {{ settings.timezone }}<br><span class="muted">{{ settings.send_days | days }}</span></td></tr>
+        <tr><td class="muted nowrap">Auto-enroll</td><td>{{ "On — new sheet leads join automatically" if campaign.auto_enroll else "Off" }}</td></tr>
+        {% if dry %}<tr><td class="muted nowrap">Dry-run emails</td><td class="num">{{ dry_run_sent }}</td></tr>{% endif %}
+      </tbody></table>
+    </div>
+
+    {% if dry %}
+    <form class="card" method="post" action="{{ url_for('campaign_go_live', campaign_id=campaign.id) }}" style="border-color:var(--bad)">{{ csrf() }}
+      <div class="card-head"><div><h2>Approve live sending</h2><p>Real emails, from your real inboxes.</p></div></div>
+      {% if blockers %}
+        {% for b in blockers %}<div class="flash error">{{ icon("alert") }}<span>{{ b }}</span></div>{% endfor %}
+      {% else %}
+        <p class="small secondary">Going live discards the dry-run history and restarts the sequence for all enrolled leads. Replies, bounces and unsubscribes always stop a lead.</p>
+        <div class="field"><label class="check"><input type="checkbox" name="approve" value="yes" required> I reviewed these emails and approve sending them to {{ preview.enrolled }} enrolled lead{{ 's' if preview.enrolled != 1 }}{{ " and future auto-enrolled leads" if campaign.auto_enroll }}.</label></div>
+        <div class="field"><label for="confirm_name">Type the campaign name to confirm</label><input id="confirm_name" type="text" name="confirm_name" autocomplete="off" required placeholder="{{ campaign.name }}"></div>
+        <button class="btn danger block">{{ icon("mail") }}Approve &amp; go live</button>
+      {% endif %}
+    </form>
+    {% else %}
+    <div class="card"><p class="secondary" style="margin:0">Approved for live sending on {{ campaign.approved_at | local }}. Pause the campaign or use “Pause all sending” to stop.</p></div>
+    {% endif %}
+  </div>
+</div>
+{% endblock %}

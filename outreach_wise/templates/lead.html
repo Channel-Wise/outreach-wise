@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, mode_badge, csrf with context %}
+{% block title %}{{ lead.email }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('leads') }}">← Leads</a></p>
+    <h1>{{ lead.email }}</h1>
+    <p class="row" style="gap:6px">{{ badge(lead.status) }}{% if suppressed %}<span class="badge bad">suppressed</span>{% endif %}<span class="muted small">Added {{ lead.created_at | local }}</span></p>
+  </div>
+  <div class="actions">
+    {% if not suppressed %}
+    <form method="post" action="{{ url_for('suppress_lead', lead_id=lead.id) }}" class="inline" onsubmit="return confirm('Never email this lead again?')">{{ csrf() }}
+      <button class="btn">{{ icon("suppressions") }}Suppress</button></form>
+    {% endif %}
+  </div>
+</div>
+
+<div class="cols">
+  <div class="stack">
+    <div class="card flush">
+      <div class="card-head"><h2>Emails</h2></div>
+      {% if messages %}
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>When</th><th>Step</th><th>Subject</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for m in messages %}
+          <tr>
+            <td class="nowrap muted">{{ (m.sent_at or m.created_at) | local }}</td>
+            <td>{{ m.position }}{{ m.label }}</td>
+            <td><details><summary>{{ m.subject }}</summary><pre class="mail-body" style="padding:8px 0">{{ m.body }}</pre></details>
+              {% if m.error %}<div class="small" style="color:var(--bad)">{{ m.error }}</div>{% endif %}</td>
+            <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}<div class="empty" style="padding:20px"><p>No emails yet.</p></div>{% endif %}
+    </div>
+
+    <div class="card">
+      <div class="card-head"><h2>Inbound</h2></div>
+      {% if inbound_rows %}
+      <ul class="list">{% for i in inbound_rows %}
+        <li><div class="row">{{ badge(i.kind) }}<strong>{{ i.subject }}</strong><span class="spacer"></span><span class="meta">{{ i.received_at | local }}</span></div>
+          <div class="quote small">{{ i.snippet }}</div></li>
+      {% endfor %}</ul>
+      {% else %}<p class="muted">No replies.</p>{% endif %}
+    </div>
+  </div>
+
+  <div class="stack">
+    <div class="card">
+      <div class="card-head"><h2>Sheet data</h2></div>
+      <table class="table"><tbody>
+        {% for key, value in (lead.fields | fields).items() %}
+        <tr><td class="muted mono" style="width:40%">{{ key }}</td><td style="word-break:break-word">{{ value }}</td></tr>
+        {% endfor %}
+      </tbody></table>
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Campaigns</h2></div>
+      {% if enrollments %}
+      <ul class="list">{% for e in enrollments %}
+        <li>
+          <div class="row"><a href="{{ url_for('campaign', campaign_id=e.campaign_id) }}">{{ e.campaign_name }}</a>{{ badge(e.status) }}</div>
+          <div class="meta">Next step {{ e.next_step }}{% if e.status == 'active' %} · due {{ e.next_send_at | local }}{% endif %}{% if e.stop_reason %} · {{ e.stop_reason }}{% endif %}</div>
+        </li>
+      {% endfor %}</ul>
+      {% else %}<p class="muted">Not enrolled.</p>{% endif %}
+    </div>
+  </div>
+</div>
+{% endblock %}

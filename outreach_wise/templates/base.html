@@ -1,0 +1,48 @@
+{% from "_macros.html" import icon, logo, csrf with context %}<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <title>{% block title %}{% endblock %} · Outreach Wise</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%234b47d6'/%3E%3Cpath d='M8 11.5 12 21l4-7 4 7 4-9.5' fill='none' stroke='white' stroke-width='2.4' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <a class="brand" href="{{ url_for('dashboard') }}">{{ logo() }}<div><strong>Outreach Wise</strong><span>by Channel Wise</span></div></a>
+    <nav class="nav">
+      {% set nav = [
+        ("dashboard", "Dashboard", "dashboard", ["dashboard"]),
+        ("leads", "Leads", "leads", ["leads", "lead"]),
+        ("campaign_list", "Campaigns", "campaigns", ["campaign_list", "campaign", "campaign_preview"]),
+        ("activity", "Activity", "activity", ["activity"]),
+        ("suppressions", "Suppressions", "suppressions", ["suppressions"]),
+        ("settings_page", "Settings", "settings", ["settings_page"]),
+      ] %}
+      {% for endpoint, label, icon_name, active in nav %}
+        <a href="{{ url_for(endpoint) }}" class="{{ 'active' if request.endpoint in active }}">{{ icon(icon_name) }}{{ label }}</a>
+      {% endfor %}
+    </nav>
+    <div class="sidebar-foot">
+      {% if settings.sending_paused %}<span class="badge warn">Sending paused</span>{% elif inbox_count %}<span class="badge good">{{ inbox_count }} inbox{{ 'es' if inbox_count != 1 }} connected</span>{% else %}<span class="badge">No inbox connected</span>{% endif %}
+      <form method="post" action="{{ url_for('logout') }}">{{ csrf() }}<button class="btn ghost sm">{{ icon("logout") }}Log out</button></form>
+    </div>
+  </aside>
+
+  <main class="main">
+    {% if settings.sending_paused %}
+      <div class="banner warn">{{ icon("pause") }}<span class="grow">All sending is paused. No email (live or dry run) goes out until you resume.</span>
+        <form method="post" action="{{ url_for('toggle_pause') }}">{{ csrf() }}<input type="hidden" name="next" value="{{ request.path }}"><button class="btn sm">{{ icon("play") }}Resume sending</button></form>
+      </div>
+    {% endif %}
+    {% for category, message in get_flashed_messages(with_categories=true) %}
+      <div class="flash {{ category }}">{{ icon("check" if category == "success" else "alert" if category == "error" else "info") }}<span>{{ message }}</span></div>
+    {% endfor %}
+    {% block content %}{% endblock %}
+  </main>
+</div>
+{% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,16 @@
+services:
+  outreach-wise:
+    build: .
+    image: outreach-wise:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      HOST: 0.0.0.0
+      DATABASE_PATH: /data/outreach-wise.db
+    ports:
+      - "127.0.0.1:8000:8000"   # put a reverse proxy (Caddy, nginx) in front for HTTPS
+    volumes:
+      - outreach-data:/data
+
+volumes:
+  outreach-data:

@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, mode_badge, csrf with context %}
+{% block title %}Campaigns{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Campaigns</h1><p>Each campaign is a sequence of emails. New campaigns always start as a dry run.</p></div>
+</div>
+
+<form class="card row" method="post" action="{{ url_for('campaign_create') }}" style="margin-bottom:16px">{{ csrf() }}
+  <input type="text" name="name" placeholder="Campaign name, e.g. Creator outreach — October" required maxlength="120" style="flex:1;min-width:220px">
+  <button class="btn primary">{{ icon("plus") }}Create campaign</button>
+</form>
+
+<div class="card flush">
+  {% if rows %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>Campaign</th><th>Status</th><th class="num">Enrolled</th><th class="num">Active</th><th class="num">Sent</th><th class="num">Replies</th><th class="num">Reply rate</th><th class="num">Bounced</th><th class="num">Unsub.</th></tr></thead>
+    <tbody>
+    {% for row in rows %}{% set s = row.stats %}
+      <tr>
+        <td><a href="{{ url_for('campaign', campaign_id=row.campaign.id) }}"><strong>{{ row.campaign.name }}</strong></a>
+          {% if row.campaign.auto_enroll %}<div class="muted small">auto-enrolls new leads</div>{% endif %}</td>
+        <td class="nowrap">{{ mode_badge(row.campaign) }} {{ badge(row.campaign.status) }}</td>
+        <td class="num">{{ s.enrolled }}</td><td class="num">{{ s.active }}</td><td class="num">{{ s.sent }}</td>
+        <td class="num">{{ s.replied }}</td><td class="num">{{ s.reply_rate | pct }}</td>
+        <td class="num">{{ s.bounced }}</td><td class="num">{{ s.unsubscribed }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% else %}
+  <div class="empty"><h3>No campaigns yet</h3><p>Create your first one above. Nothing is sent until you approve it.</p></div>
+  {% endif %}
+</div>
+{% endblock %}

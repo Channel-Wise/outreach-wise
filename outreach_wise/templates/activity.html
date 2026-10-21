@@ -1,0 +1,39 @@
+{% extends "base.html" %}
+{% from "_macros.html" import badge, pager with context %}
+{% block title %}Activity{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Activity</h1><p>Everything the app did: syncs, sends, dry runs, replies, errors and approvals. {{ "{:,}".format(total) }} entries.</p></div>
+  <form method="get" class="actions">
+    <select name="kind" onchange="this.form.submit()" aria-label="Type">
+      <option value="">All types</option>
+      {% for k in kinds %}<option value="{{ k }}" {{ 'selected' if k == kind }}>{{ k.replace('_', ' ') }}</option>{% endfor %}
+    </select>
+    <select name="level" onchange="this.form.submit()" aria-label="Level">
+      <option value="">All levels</option>
+      {% for l in ["info", "warning", "error"] %}<option value="{{ l }}" {{ 'selected' if l == level }}>{{ l }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+<div class="card flush">
+  {% if rows %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th style="width:130px">When</th><th style="width:120px">Type</th><th>What happened</th><th style="width:120px"></th></tr></thead>
+    <tbody>
+    {% for e in rows %}
+      <tr>
+        <td class="nowrap muted">{{ e.created_at | local }}</td>
+        <td>{{ badge(e.level, e.kind.replace('_', ' ')) }}</td>
+        <td>{{ e.message }}</td>
+        <td class="nowrap small">
+          {% if e.lead_id %}<a href="{{ url_for('lead', lead_id=e.lead_id) }}">lead</a>{% endif %}
+          {% if e.campaign_id %}<a href="{{ url_for('campaign', campaign_id=e.campaign_id) }}">campaign</a>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ pager(page, pages, 'activity') }}
+  {% else %}<div class="empty"><p>No activity{{ " matching these filters" if kind or level }}.</p></div>{% endif %}
+</div>
+{% endblock %}
