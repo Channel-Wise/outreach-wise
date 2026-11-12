@@ -3,7 +3,7 @@
 {% block title %}Review{% endblock %}
 {% block content %}
 <div class="page-head">
-  <div><h1>Review</h1><p>Check what the AI wrote before it's sent. Your edits are saved as examples for the playbook.</p></div>
+  <div>{% for c in campaign_list if c.id == campaign_id %}<p class="small"><a href="{{ url_for('campaign', campaign_id=c.id) }}">← {{ c.name }}</a></p>{% endfor %}<h1>Review</h1><p>Check what the AI wrote before it's sent. Your edits are saved as examples for the playbook.</p></div>
   <form method="get" action="{{ url_for('review') }}" class="row">
     <input type="hidden" name="status" value="{{ status }}">
     <select name="campaign" aria-label="Campaign" onchange="this.form.submit()">

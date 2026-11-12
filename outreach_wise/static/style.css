@@ -712,6 +712,8 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .evidence li:last-child { border-bottom: 0; }
 .ai-meter { display: flex; height: 8px; border-radius: 99px; overflow: hidden; background: var(--surface-2); margin: 8px 0 6px; }
 .ai-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); }
+.ai-legend a { color: inherit; text-decoration: none; }
+.ai-legend a:hover { color: var(--text); text-decoration: underline; }
 .ai-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
 .ext svg, .btn svg, .subhead svg { width: 14px; height: 14px; vertical-align: -2px; }
 

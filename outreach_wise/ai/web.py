@@ -158,14 +158,17 @@ def register(app: Flask, cfg: Config) -> None:
         settings = db.get_settings(c)
         playbook = playbooks.load(c, campaign["playbook_id"])
         counts = {s: 0 for s in STATUSES}
+        by_lead = {}  # lead id -> (ai_fields id, status for the review tabs, why), for the leads table
         if campaign["playbook_id"]:
             for row in c.execute(
-                "SELECT a.status, COUNT(*) AS n FROM ai_fields a WHERE a.playbook_id = ? AND a.lead_id IN"
-                " (SELECT lead_id FROM enrollments WHERE campaign_id = ?) GROUP BY a.status",
+                "SELECT a.id, a.lead_id, a.status, a.skip_reason, a.error FROM ai_fields a WHERE a.playbook_id = ? AND a.lead_id IN"
+                " (SELECT lead_id FROM enrollments WHERE campaign_id = ?)",
                 (campaign["playbook_id"], campaign["id"]),
             ):
                 key = "pending" if row["status"] == "researching" else row["status"]
-                counts[key] = counts.get(key, 0) + row["n"]
+                counts[key] = counts.get(key, 0) + 1
+                why = row["skip_reason"] if key == "skipped" else row["error"] if key == "failed" else ""
+                by_lead[row["lead_id"]] = (row["id"], key, why or "")
         return {
             "enabled": settings["ai_enabled"],
             "playbooks": [p for p in playbooks.all_playbooks(c) if p["parsed"]],
@@ -173,6 +176,8 @@ def register(app: Flask, cfg: Config) -> None:
             "variables": playbook.variables if playbook else [],
             "counts": counts,
             "total": sum(counts.values()),
+            "by_lead": by_lead,
+            "labels": STATUS_LABELS,
         }
 
     # --- settings ---------------------------------------------------------------------------
