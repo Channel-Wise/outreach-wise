@@ -430,3 +430,43 @@ def test_live_sends_follow_the_branches_and_thread_correctly(conn, cfg, google, 
     assert len(by_thread) == 6
     for tags in by_thread.values():
         assert tags in (["S1-A", "S2-A"], ["S1-B", "S2-Y"]), tags
+
+
+# --- 7. the preview page shows the routing ------------------------------------------------
+
+
+def test_preview_shows_who_gets_each_email(conn, cfg, google):
+    """Before going live you can see, per follow-up, which variant's leads get it and what share."""
+    from test_web import login
+
+    from outreach_wise.web import create_app
+
+    f = Flow(conn, leads=4)
+    f.variant(1, "B")
+    f.variant(1, "C")
+    f.split(1, None, A=50, B=30, C=20)
+    f.link(2, "A", "A")
+    f.variant(2, "Z", after=["A", "B"])
+    f.split(2, "A", A=70, Z=30)  # C has no follow-up: its leads end after the first email
+    f.start()
+    steps = campaigns.steps_with_variants(conn, f.id)
+    campaigns.annotate_routing(steps)
+    assert [(v["label"], [r["pct"] for r in v["routes"]]) for v in steps[0]["variants"]] == [
+        ("A", [50]),
+        ("B", [30]),
+        ("C", [20]),
+    ]
+    routes = {v["label"]: [(r["after"], r["pct"]) for r in v["routes"]] for v in steps[1]["variants"]}
+    assert routes == {"A": [("A", 70)], "B": [("A", 30), ("B", 100)]}  # Z is labelled B in step 2
+    assert steps[1]["uncovered"] == ["C"]
+
+    client = create_app(cfg, google).test_client()
+    login(client)
+    page = client.get(f"/campaigns/{f.id}/preview").data.decode()
+    assert "50% of new leads" in page and "20% of new leads" in page
+    assert (
+        "70% of leads who got A" in page
+        and "30% of leads who got A" in page
+        and "100% of leads who got B" in page
+    )
+    assert "Leads who got C in the previous email have no follow-up here" in page
