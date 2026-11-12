@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY pyproject.toml README.md LICENSE ./
 COPY outreach_wise ./outreach_wise
-RUN pip install --no-cache-dir . \
+RUN pip install --no-cache-dir ".[ai]" \
  && useradd --system --uid 10001 --home-dir /app outreach \
  && mkdir -p /data && chown outreach /data
 

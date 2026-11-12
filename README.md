@@ -11,7 +11,8 @@ Outreach Wise — by [Channel Wise](https://github.com/Channel-Wise)
 Outreach Wise syncs leads from a Google Sheet, sends personalized sequences from your own
 Gmail / Google Workspace inboxes, stops following up the moment someone replies, and shows you
 what's working. It is one Python process and one SQLite file. There's no SaaS subscription and
-no per-seat pricing, and your lead data never leaves your server.
+no per-seat pricing, and your lead data never leaves your server (unless you turn on the optional
+[AI personalization](#ai-personalization-optional), which sends what a playbook needs to the model provider you choose).
 
 It was built for Channel Wise's own outreach to YouTube creators (thousands of leads in a
 sheet, a few hundred new ones a day). It has no dependency on Channel Wise infrastructure, and
@@ -181,6 +182,73 @@ I watched {{latest_video|your latest video}} and ...
 - Emails are **plain text**. Your footer (Settings → Sender & footer) is appended to every
   email. Available system variables: `{{email}}`, `{{unsubscribe_url}}`.
 - **Auto-enroll** puts new leads from each sheet sync straight into an active campaign.
+
+## AI personalization (optional)
+
+Off by default. When it's on, a **playbook** researches each lead and writes the personal
+parts of an email (a hook about their latest series, a "why you" line, a subject), while the
+rest of the email stays in your normal template. You review every draft before it's sent.
+
+1. **Settings → AI personalization**: turn it on, pick a provider and model, and add keys.
+   - *Anthropic API*: your own key (`ANTHROPIC_API_KEY`, or saved encrypted in Settings).
+     Needs the extra: `pip install 'outreach-wise[ai]'` (the Docker image includes it).
+   - *Claude Code on this machine*: runs `claude -p` with the account that CLI is signed in to.
+     Meant for local use.
+   - A *YouTube Data API key* (`YOUTUBE_API_KEY`) for the YouTube channel source.
+2. **Playbooks**: start from an example, draft one from your existing outreach guide (PDF,
+   Markdown or text), or write one. Test it on a real lead before saving.
+3. In a campaign's **Settings**, pick the playbook. Use its fields in your emails like any
+   variable: `{{ai_hook}}`, `{{ai_subject}}`.
+4. **Review**: approve, edit, ask for a new draft or skip. Your edits become examples the
+   playbook learns from.
+
+How it behaves:
+
+- Fields are written about 48 hours before an email that uses them is due, and only if the
+  A/B variant the lead will get actually contains `{{ai_…}}`. Leads on a variant without AI
+  fields never trigger a model call.
+- Results are stored per lead and playbook, so the same lead in another campaign with the same
+  playbook costs nothing. Review warns you if a field was already sent to that person.
+- An email waits (without using the inbox's daily limit) until its fields are approved. Leads
+  the AI skips (inactive channel, minors, sensitive topics, no real information) stop.
+- Daily research limit and a monthly spend cap in Settings. Nothing is sent to the provider
+  until a campaign uses a playbook.
+
+A playbook is one shareable file, `*.playbook.md`: TOML settings between `+++` lines, then
+Markdown instructions. See `outreach_wise/playbooks/` for examples.
+
+```toml
++++
+name = "YouTube creators"
+language = "auto"            # write in the lead's own language
+
+[input]
+column = "channel_url"       # the sheet column the research starts from
+sources = ["youtube_channel"]  # or "web_page"
+
+[fields.hook]                # becomes {{ai_hook}}
+describe = "One concrete, verifiable thing on their channel. No flattery."
+max_words = 60
+
+[fields.greeting]
+describe = "\"Hi <first name>,\" only if the name appears on the channel"
+fallback = "Hi there,"       # used when it can't be written; otherwise the lead is skipped
+
+[fields.subject]
+describe = "Personal, tied to the hook"
+alternatives = 3             # extra options to pick from in Review
+
+[checks]                     # flagged in Review, never blocking
+email_words = [60, 150]
+subject_words = [3, 8]
+banned = ["quick question"]
+one_link = true
+numbers_in_data = true       # every number must appear in the fetched data
++++
+
+# Who you are writing as
+...
+```
 
 ## Safety model
 

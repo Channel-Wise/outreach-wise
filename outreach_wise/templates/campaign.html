@@ -31,6 +31,24 @@
 <div class="banner live">{{ icon("mail") }}<span class="grow"><strong>Live</strong> since {{ campaign.approved_at | local }}. Real emails go out within your sending window and daily limits.</span></div>
 {% endif %}
 
+{% set ai = ai_campaign(campaign) %}
+{% if ai.enabled and ai.playbook %}
+<section class="card" style="margin-bottom:16px">
+  <div class="row" style="justify-content:space-between">
+    <div><h2>AI personalization</h2><p class="muted small" style="margin:2px 0 0">Playbook: {{ ai.playbook.name }} · {{ "emails wait for your approval" if campaign.require_approval else "drafts are sent without review" }}</p></div>
+    <a class="small" href="{{ url_for('review', campaign=campaign.id) }}">Open review ({{ ai.counts.needs_review }} waiting) →</a>
+  </div>
+  {% if ai.total %}
+  {% set t = ai.total %}
+  <div class="ai-meter" role="img" aria-label="{{ ai.counts.approved }} approved, {{ ai.counts.needs_review }} waiting, {{ ai.counts.pending }} researching, {{ ai.counts.skipped + ai.counts.failed }} skipped or failed">
+    <span style="width:{{ 100 * ai.counts.approved / t }}%;background:var(--good)"></span><span style="width:{{ 100 * ai.counts.needs_review / t }}%;background:var(--accent)"></span><span style="width:{{ 100 * ai.counts.pending / t }}%;background:var(--accent-soft)"></span><span style="width:{{ 100 * (ai.counts.skipped + ai.counts.failed) / t }}%;background:var(--border-strong)"></span>
+  </div>
+  <div class="ai-legend"><span><i style="background:var(--good)"></i>{{ ai.counts.approved }} approved</span><span><i style="background:var(--accent)"></i>{{ ai.counts.needs_review }} waiting for you</span><span><i style="background:var(--accent-soft)"></i>{{ ai.counts.pending }} researching</span><span><i style="background:var(--border-strong)"></i>{{ ai.counts.skipped }} skipped{% if ai.counts.failed %} · {{ ai.counts.failed }} failed{% endif %}</span></div>
+  {% else %}
+  <p class="muted small" style="margin:8px 0 0">AI fields are written about {{ settings.ai_lookahead_hours }} hours before each email that uses them is due, only for leads whose email variant needs them.</p>
+  {% endif %}
+</section>
+{% endif %}
 
 <div class="stats">
   <div class="stat"><div class="label">Enrolled</div><div class="value">{{ stats.enrolled }}</div><div class="sub">{{ stats.active }} in progress · {{ stats.completed }} finished</div></div>
@@ -89,6 +107,10 @@
         <div class="field">
           <div class="small secondary" style="margin-bottom:6px">Insert a variable</div>
           <div class="chips">{% for v in variables %}<button type="button" class="chip" data-var="{{ v }}">{{ '{{' ~ v ~ '}}' }}</button>{% endfor %}</div>
+          {% if ai.enabled and ai.variables %}
+          <div class="chip-group">Written by the playbook</div>
+          <div class="chips">{% for v in ai.variables %}<button type="button" class="chip ai" data-var="{{ v }}">{{ '{{' ~ v ~ '}}' }}</button>{% endfor %}</div>
+          {% endif %}
         </div>
         <p class="branch-help" data-d="branch-info" style="margin:0 0 12px"></p>
         <label class="check" data-d="active-wrap"><input type="checkbox" data-d="active"> Active — include this variant in the A/B split</label>
@@ -344,6 +366,19 @@
       </div>
       <button class="btn">Save settings</button>
     </form>
+    {% if ai.enabled %}
+    <form class="card" method="post" action="{{ url_for('campaign_ai', campaign_id=campaign.id) }}">{{ csrf() }}
+      <div class="card-head"><div><h2>AI personalization</h2><p>Pick a playbook to use its <code>{{ '{{ai_…}}' }}</code> fields in this campaign's emails.</p></div></div>
+      <div class="field"><label for="playbook_id">Playbook</label>
+        <select id="playbook_id" name="playbook_id">
+          <option value="">None</option>
+          {% for p in ai.playbooks %}<option value="{{ p.id }}" {{ 'selected' if campaign.playbook_id == p.id }}>{{ p.name }}</option>{% endfor %}
+        </select>
+        <div class="hint"><a href="{{ url_for('playbook_list') }}">Manage playbooks</a></div></div>
+      <div class="field"><label class="check"><input type="checkbox" name="require_approval" {{ 'checked' if campaign.require_approval }}> Hold each AI-written email until I approve it in Review</label></div>
+      <button class="btn">Save</button>
+    </form>
+    {% endif %}
     <div class="stack">
       <div class="card">
         <div class="card-head"><div><h2>Run it</h2><p>{{ "A dry run goes through the whole schedule without sending. Approve it on the preview page to go live." if dry else "Pause to stop all sends from this campaign." }}</p></div></div>

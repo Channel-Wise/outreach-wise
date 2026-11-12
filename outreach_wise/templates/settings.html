@@ -90,6 +90,8 @@
     <div class="row" style="justify-content:flex-end"><button class="btn primary">Save</button></div>
   </form>
 
+  {% include "_ai_settings.html" %}
+
   <section class="card" id="danger">
     <div class="card-head"><div><h2>Emergency stop</h2><p>Pauses every campaign, live and dry run, until you resume. Inbox checks for replies keep running.</p></div>
       <form method="post" action="{{ url_for('toggle_pause') }}" class="inline">{{ csrf() }}<input type="hidden" name="next" value="{{ url_for('settings_page') }}#danger">

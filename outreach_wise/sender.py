@@ -223,6 +223,18 @@ def _pick_variant(
     return best
 
 
+def _pinned_variant(
+    conn: sqlite3.Connection, enrollment: sqlite3.Row, step: sqlite3.Row
+) -> sqlite3.Row | None:
+    """The variant picked ahead of time for this step (AI personalization), if still active."""
+    if not enrollment["pinned_variant_id"] or enrollment["pinned_step"] != step["position"]:
+        return None
+    return conn.execute(
+        "SELECT * FROM variants WHERE id = ? AND step_id = ? AND active = 1",
+        (enrollment["pinned_variant_id"], step["id"]),
+    ).fetchone()
+
+
 def process(
     conn: sqlite3.Connection,
     cfg: Config,
@@ -259,7 +271,9 @@ def process(
         conn.commit()
         return "skipped"
     previous = _previous_variant(conn, enrollment, step["position"]) if step["position"] > 1 else None
-    variant = _pick_variant(conn, step["id"], previous["id"] if previous else None)
+    variant = _pinned_variant(conn, enrollment, step) or _pick_variant(
+        conn, step["id"], previous["id"] if previous else None
+    )
     if not variant:
         has_active = conn.execute(
             "SELECT 1 FROM variants WHERE step_id = ? AND active = 1", (step["id"],)
@@ -284,6 +298,17 @@ def process(
         conn.commit()
         return "skipped"
     variables = campaigns.lead_variables(cfg, lead)
+    # AI fields ({{ai_*}}): wait until they are written (and approved), never send a blank.
+    if "ai_" in variant["subject"] + variant["body"]:
+        from .ai import scheduler  # noqa: PLC0415 — optional feature, avoids an import cycle
+
+        verdict = scheduler.gate(conn, settings, enrollment, step, variant, lead, variables, moment)
+        if verdict:
+            if verdict != "held":
+                _stop(conn, enrollment, "stopped", verdict)
+                db.log_event(conn, "skip", f"Skipped {lead['email']}: {verdict}", level="warning", **log)
+            conn.commit()
+            return "skipped"
     try:
         subject = (
             campaigns.reply_subject(enrollment["last_subject"])
@@ -495,7 +520,7 @@ def _advance(
         """
         UPDATE enrollments SET next_step = ?, next_send_at = ?, status = ?, last_subject = ?,
             thread_id = COALESCE(?, thread_id), last_message_id = COALESCE(?, last_message_id),
-            account_id = COALESCE(account_id, ?), updated_at = ?
+            account_id = COALESCE(account_id, ?), updated_at = ?, pinned_variant_id = NULL, pinned_step = NULL
         WHERE id = ?
         """,
         (

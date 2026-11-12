@@ -27,8 +27,17 @@ Issues = "https://github.com/Channel-Wise/outreach-wise/issues"
 [project.scripts]
 outreach-wise = "outreach_wise.__main__:main"
 
+[project.optional-dependencies]
+ai = [
+    "anthropic>=2.8.0",
+]
+
 [dependency-groups]
-dev = ["pytest>=8", "ruff>=0.6"]
+dev = [
+    "anthropic>=2.8.0",
+    "pytest>=8",
+    "ruff>=0.6",
+]
 
 [build-system]
 requires = ["hatchling"]
