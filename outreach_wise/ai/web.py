@@ -64,25 +64,27 @@ def playbook_from_form(form) -> str:
     if form.get("mode") == "raw":
         return form.get("raw", "").replace("\r\n", "\n")
     fields = []
+    names = form.getlist("f_name")
     rows = zip(
-        form.getlist("f_name"),
+        names,
         form.getlist("f_describe"),
         form.getlist("f_max_words"),
         form.getlist("f_fallback"),
         form.getlist("f_alternatives"),
+        form.getlist("f_if_empty") or [""] * len(names),
         strict=False,
     )
-    for name, describe, max_words, fallback, alternatives in rows:
+    for name, describe, max_words, fallback, alternatives, if_empty in rows:
         name = name.strip().lower().removeprefix("ai_")
         if not name and not describe.strip():
             continue
-        fallback = fallback.strip()
+        fallback = fallback.strip() if if_empty in ("fallback", "") else ""
         fields.append(
             Field(
                 name=name,
                 describe=" ".join(describe.split()),
                 max_words=_int(max_words),
-                required=not fallback,
+                required=not fallback and if_empty != "empty",
                 fallback=fallback or None,
                 alternatives=_int(alternatives, 0) or 0,
             )

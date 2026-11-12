@@ -677,6 +677,8 @@ button.node:hover { border-color: var(--accent); }
 .field-rows { display: flex; flex-direction: column; gap: 10px; }
 .field-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 90px 150px 80px 34px; gap: 8px; align-items: start; }
 .field-row.head { font-size: 12px; color: var(--muted); font-weight: 600; }
+.field-row .if-empty { display: flex; flex-direction: column; gap: 6px; }
+.field-row .if-empty select:not(:has(option[value="fallback"]:checked)) + input { display: none; }
 .field-row textarea { min-height: 38px; height: 38px; font: inherit; }
 @media (max-width: 900px) { .field-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .field-row.head { display: none; } .field-row textarea { grid-column: 1 / -1; } }
 .out { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface-2); font-size: 13.5px; }

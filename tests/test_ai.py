@@ -522,6 +522,21 @@ def test_editor_form_saves_a_valid_playbook(client, conn, ai_on):
     assert saved.checks.banned == ["synergy", "leverage"] and saved.checks.email_words == (50, 120)
     assert saved.get_field("subject").alternatives == 3
 
+    # "Leave it empty" survives a save; it used to turn into "skip the lead"
+    data.update(
+        playbook_id=str(conn.execute("SELECT id FROM playbooks WHERE name = 'Podcasts'").fetchone()[0]),
+        f_if_empty=["empty", "fallback"], f_fallback=["", "Hello"],
+    )  # fmt: skip
+    assert client.post("/playbooks/save", data=data).status_code == 302
+    saved = playbooks.parse(
+        conn.execute("SELECT source FROM playbooks WHERE name = 'Podcasts'").fetchone()[0]
+    )
+    hook, subject = saved.fields
+    assert not hook.required and hook.fallback is None
+    assert subject.fallback == "Hello"
+    page = client.get(f"/playbooks/{data['playbook_id']}").get_data(as_text=True)
+    assert '<option value="empty" selected>' in page
+
 
 def test_review_approve_records_edits_and_releases_the_email(
     client, conn, cfg, google, ai_on, playbook_id, clock
