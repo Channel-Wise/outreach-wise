@@ -1,7 +1,10 @@
 """Inbox polling: detects replies, bounces, unsubscribes and auto-replies, and stops sequences.
 
-A message counts as related to a lead when it is in a thread we started, or comes from a
-lead's address. Unrelated mail is only remembered by id (no content is stored).
+A message counts as related to a lead when it is in a thread we started (Gmail thread, or an
+In-Reply-To / References header naming one of our Message-IDs), or comes from a lead's address.
+Unrelated mail is only remembered by id (no content is stored).
+
+Gmail inboxes are read through the Gmail API; SMTP/IMAP inboxes over IMAP (see transports/).
 """
 
 import html
@@ -11,7 +14,7 @@ from collections import Counter
 from datetime import UTC, datetime, timedelta
 from email.utils import parseaddr
 
-from . import db
+from . import db, transports
 from .config import Config
 from .google import Google
 from .security import decrypt
@@ -63,6 +66,10 @@ def classify(message: dict) -> str:
     headers = message["headers"]
     sender = sender_of(message)
     subject = headers.get("subject", "").strip().lower()
+    if message.get("bounced"):  # a parsed delivery report naming a permanently failed address
+        return "bounce"
+    if message.get("temporary_failure"):  # "mailbox full, still trying": not a bounce yet
+        return "auto_reply"
     if sender.startswith(BOUNCE_SENDERS) or subject.startswith(BOUNCE_SUBJECTS):
         return "bounce"
     automatic = (
@@ -86,6 +93,16 @@ def handle(conn: sqlite3.Connection, account: sqlite3.Row, message: dict, moment
         " AND mode = 'live' ORDER BY id DESC LIMIT 1",
         (message["thread_id"], account["id"]),
     ).fetchone()
+    references = message.get("references") or []
+    if not match and references:
+        # A reply quoting one of our Message-IDs (how IMAP mail is threaded).
+        match = conn.execute(
+            f"SELECT enrollment_id, lead_id, gmail_thread_id FROM messages WHERE account_id = ? AND mode = 'live'"
+            f" AND rfc_message_id IN ({','.join('?' * len(references))}) ORDER BY id DESC LIMIT 1",
+            (account["id"], *references),
+        ).fetchone()
+        if match:
+            message = {**message, "thread_id": match["gmail_thread_id"]}
     lead_id = match["lead_id"] if match else None
     enrollment_id = match["enrollment_id"] if match else None
     kind = classify(message)
@@ -93,7 +110,10 @@ def handle(conn: sqlite3.Connection, account: sqlite3.Row, message: dict, moment
 
     if lead_id is None:
         # Not in one of our threads: match by the sender (or, for bounces, the failed address).
-        candidates = EMAIL_IN_TEXT.findall(snippet) if kind == "bounce" else [sender]
+        if kind == "bounce":
+            candidates = message.get("bounced") or EMAIL_IN_TEXT.findall(snippet)
+        else:
+            candidates = [sender]
         for email in candidates:
             row = conn.execute("SELECT id FROM leads WHERE email = ?", (email.lower(),)).fetchone()
             if row:
@@ -214,6 +234,8 @@ def poll(
 ) -> Counter:
     """Look at everything that arrived since the last poll (with 1h overlap; ids are deduplicated)."""
     moment = moment or db.now()
+    if transports.kind(account) == "smtp_imap":
+        return _poll_imap(conn, cfg, account, moment)
     refresh = decrypt(cfg.secret_key, account["refresh_token"])
     since = db.parse(account["inbox_checked_at"] or account["created_at"]) - timedelta(hours=1)
     listed = google.list_messages(refresh, f"-from:me after:{int(since.timestamp())}")
@@ -232,10 +254,39 @@ def poll(
     return counts
 
 
+def _poll_imap(conn: sqlite3.Connection, cfg: Config, account: sqlite3.Row, moment: datetime) -> Counter:
+    """IMAP: new messages by UID since the last poll (state kept in kv), first poll by date."""
+    transport = transports.SmtpImapTransport(transports.MailboxConfig.from_account(account, cfg.secret_key))
+    key = f"imap_state:{account['id']}"
+    since = db.parse(account["inbox_checked_at"] or account["created_at"]) - timedelta(days=1)
+    messages, state = transport.fetch_new(db.get_kv(conn, key), since)
+    own = account["email"].lower()
+    messages = [m for m in messages if sender_of(m) != own]
+    known = _known(conn, [m["id"] for m in messages])
+    counts: Counter = Counter()
+    for message in messages:
+        if message["id"] in known:
+            continue
+        counts[handle(conn, account, message, moment)] += 1
+        conn.commit()
+    db.set_kv(conn, key, state)
+    conn.execute(
+        "UPDATE accounts SET inbox_checked_at = ?, last_error = NULL WHERE id = ?",
+        (db.iso(moment), account["id"]),
+    )
+    conn.commit()
+    return counts
+
+
 def check_thread(
     conn: sqlite3.Connection, cfg: Config, google: Google, account: sqlite3.Row, enrollment: sqlite3.Row
 ) -> bool:
     """Process any new messages in this enrollment's thread. True if the sequence must stop."""
+    if transports.kind(account) == "smtp_imap":
+        # IMAP has no thread lookup; an incremental poll of the inbox is just as cheap.
+        _poll_imap(conn, cfg, account, db.now())
+        status = conn.execute("SELECT status FROM enrollments WHERE id = ?", (enrollment["id"],)).fetchone()
+        return status["status"] != "active"
     refresh = decrypt(cfg.secret_key, account["refresh_token"])
     messages = [
         m for m in google.thread(refresh, enrollment["thread_id"]) if sender_of(m) != account["email"]

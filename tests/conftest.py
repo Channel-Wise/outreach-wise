@@ -146,3 +146,16 @@ def make_campaign(conn, *, live=False, leads=3, delay_days=3):
         campaigns.go_live(conn, campaign_id)
     conn.commit()
     return campaign_id
+
+
+@pytest.fixture(autouse=True)
+def no_dns(monkeypatch):
+    """The weekly deliverability check must not query real DNS from tests; tests that exercise
+    it replace these stubs with their own records."""
+    import checkdmarc
+
+    from outreach_wise import deliverability
+
+    monkeypatch.setattr(checkdmarc, "check_spf", lambda domain, **kw: {"record": None, "valid": False})
+    monkeypatch.setattr(checkdmarc, "check_dmarc", lambda domain, **kw: {"record": None})
+    monkeypatch.setattr(deliverability, "_dkim", lambda domain, selectors: None)

@@ -6,7 +6,7 @@ import random
 import signal
 import sys
 
-from . import __version__, db, sheets
+from . import __version__, check_inbox, db, sheets
 from .config import ConfigError, load_config, load_dotenv
 from .google import Google
 
@@ -91,7 +91,11 @@ def main(argv: list[str] | None = None) -> None:
     sub.add_parser("worker", help="run only the background worker")
     demo_parser = sub.add_parser("demo", help="load fake demo leads to try a dry run")
     demo_parser.add_argument("--count", type=int, default=60)
+    check_parser = sub.add_parser("check-inbox", help="test an SMTP/IMAP mailbox for real (no database)")
+    check_inbox.add_arguments(check_parser)
     args = parser.parse_args(argv)
+    if args.command == "check-inbox":  # needs no configuration or database
+        sys.exit(check_inbox.run(args))
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     load_dotenv()

@@ -1,0 +1,39 @@
+{# "Add an inbox with email + password" form, inside the Inboxes card. Behaviour: static/smtp.js #}
+<details class="smtp-add" id="smtp-add" {{ 'open' if not accounts and not cfg.google_configured }}>
+  <summary>{{ icon("plus") }} Add an inbox with email + password (SMTP/IMAP)</summary>
+  <p class="muted small">For Zoho, Yandex, Fastmail, your own mail server, or Gmail with an app password. Enter the address and we'll look up the server settings.</p>
+  <form method="post" action="{{ url_for('smtp_save') }}" data-smtp-form autocomplete="off">{{ csrf() }}
+    <div class="fields-2">
+      <div class="field"><label for="smtp_email">Email address</label>
+        <input id="smtp_email" type="email" name="email" required placeholder="you@yourdomain.com" data-autoconfig-url="{{ url_for('smtp_autoconfig') }}">
+        <div class="hint" data-autoconfig-status></div></div>
+      <div class="field"><label for="smtp_password">Password or app password</label>
+        <input id="smtp_password" type="password" name="password" required autocomplete="new-password">
+        <div class="hint">Stored encrypted with <code>SECRET_KEY</code>; never shown again.</div></div>
+    </div>
+    <div class="banner warn" data-oauth-note hidden>{{ icon("alert") }}<span class="grow" data-oauth-text></span></div>
+    <details class="smtp-servers" data-servers>
+      <summary>Server settings</summary>
+      <div class="fields-3">
+        <div class="field"><label for="smtp_host">SMTP server</label><input id="smtp_host" type="text" name="smtp_host" required placeholder="smtp.yourprovider.com"></div>
+        <div class="field"><label for="smtp_port">Port</label><input id="smtp_port" type="number" name="smtp_port" value="587" min="1" max="65535"></div>
+        <div class="field"><label for="smtp_security">Security</label>
+          <select id="smtp_security" name="smtp_security"><option value="starttls">STARTTLS</option><option value="ssl">SSL/TLS</option></select></div>
+      </div>
+      <div class="fields-3">
+        <div class="field"><label for="imap_host">IMAP server</label><input id="imap_host" type="text" name="imap_host" placeholder="imap.yourprovider.com">
+          <div class="hint">Needed to detect replies and bounces.</div></div>
+        <div class="field"><label for="imap_port">Port</label><input id="imap_port" type="number" name="imap_port" value="993" min="1" max="65535"></div>
+        <div class="field"><label for="imap_security">Security</label>
+          <select id="imap_security" name="imap_security"><option value="ssl">SSL/TLS</option><option value="starttls">STARTTLS</option></select></div>
+      </div>
+      <div class="field"><label for="smtp_username">Username</label><input id="smtp_username" type="text" name="username" placeholder="Same as the email address">
+        <div class="hint">Only if your provider uses a different login name.</div></div>
+    </details>
+    <ul class="smtp-steps" data-steps hidden></ul>
+    <div class="row" style="justify-content:flex-end">
+      <button class="btn" type="button" data-smtp-test data-url="{{ url_for('smtp_test') }}">Test connection</button>
+      <button class="btn primary">Add inbox</button>
+    </div>
+  </form>
+</details>

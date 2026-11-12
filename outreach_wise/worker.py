@@ -1,4 +1,5 @@
-"""Background worker: a single loop that syncs the sheet, polls inboxes and sends.
+"""Background worker: a single loop that syncs the sheet, polls inboxes, checks the sending
+domains weekly and sends.
 
 Runs as a thread inside the web process by default (`outreach-wise serve`) or on its own
 (`outreach-wise worker`). A lease lock in the database guarantees that only one worker is
@@ -13,7 +14,7 @@ import threading
 import uuid
 from datetime import timedelta
 
-from . import db, inbox, sender, sheets
+from . import db, deliverability, inbox, sender, sheets
 from .config import Config
 from .google import AuthError, Google, GoogleError
 
@@ -41,7 +42,9 @@ def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
     if _due(conn, "job:inbox", settings["inbox_poll_minutes"]):
         db.set_kv(conn, "job:inbox", db.iso(db.now()))
         conn.commit()
-        for account in conn.execute("SELECT * FROM accounts WHERE enabled = 1").fetchall():
+        # SMTP inboxes without an IMAP server can't be read (the sender holds their follow-ups).
+        readable = "SELECT * FROM accounts WHERE enabled = 1 AND (transport = 'gmail_api' OR imap_host <> '')"
+        for account in conn.execute(readable).fetchall():
             try:
                 inbox.poll(conn, cfg, google, account)
             except (AuthError, ValueError) as err:
@@ -55,6 +58,16 @@ def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
             except Exception:
                 conn.rollback()
                 log.exception("Inbox poll crashed for %s", account["email"])
+
+    if _due(conn, "job:deliverability", deliverability.INTERVAL_MINUTES):
+        # Weekly SPF / DKIM / DMARC check of every sending domain (results in the activity log).
+        db.set_kv(conn, "job:deliverability", db.iso(db.now()))
+        conn.commit()
+        try:
+            deliverability.run(conn)
+        except Exception:
+            conn.rollback()
+            log.exception("Deliverability check crashed")
 
     sender.run_send_cycle(conn, cfg, google)
 

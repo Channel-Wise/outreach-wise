@@ -1,0 +1,31 @@
+{# Weekly SPF / DKIM / DMARC report (outreach_wise/deliverability.py). #}
+{% set report = domain_health() %}
+<section class="card" id="domain-health">
+  <div class="card-head">
+    <div><h2>Domain health</h2><p>Checked weekly: whether receiving servers can verify mail from your sending domains. A failed check here sends mail to spam far more than wording does.</p></div>
+    <form method="post" action="{{ url_for('deliverability_check') }}" class="inline">{{ csrf() }}
+      <button class="btn">{{ icon("sync") }}Check now</button></form>
+  </div>
+  {% if report and report.domains %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>Domain</th><th>Check</th><th>Result</th><th>Details</th></tr></thead>
+      <tbody>
+      {% for domain, results in report.domains.items() %}
+        {% for r in results %}
+        <tr>
+          <td>{% if loop.first %}<strong>{{ domain }}</strong>{% endif %}</td>
+          <td>{{ r.check }}</td>
+          <td><span class="badge {{ {'ok': 'good', 'warn': 'warn', 'fail': 'bad'}[r.status] }}">{{ {'ok': 'OK', 'warn': 'Check', 'fail': 'Fix'}[r.status] }}</span></td>
+          <td class="small">{{ r.detail }}</td>
+        </tr>
+        {% endfor %}
+      {% endfor %}
+      </tbody>
+    </table></div>
+    <p class="muted small" style="margin:12px 0 0">Last checked {{ report.checked_at | local }}. Consumer addresses (gmail.com, outlook.com…) are skipped: the provider manages their records.</p>
+  {% elif report %}
+    <div class="empty" style="padding:20px"><p>No custom sending domain to check yet.</p></div>
+  {% else %}
+    <div class="empty" style="padding:20px"><p>Not checked yet. It runs automatically once a week, or now.</p></div>
+  {% endif %}
+</section>

@@ -714,3 +714,13 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .ai-legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12.5px; color: var(--text-2); }
 .ai-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
 .ext svg, .btn svg, .subhead svg { width: 14px; height: 14px; vertical-align: -2px; }
+
+/* Settings → Inboxes: add an SMTP/IMAP inbox (templates/_smtp_inbox.html) */
+.smtp-add { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.smtp-add > summary { display: inline-flex; align-items: center; gap: 6px; }
+.smtp-add > summary svg { width: 15px; height: 15px; }
+.smtp-servers { margin: 4px 0 14px; }
+.smtp-steps { list-style: none; margin: 0 0 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.smtp-steps .ok { color: var(--good); }
+.smtp-steps .bad { color: var(--bad); }
+.smtp-steps .note { color: var(--muted); }
