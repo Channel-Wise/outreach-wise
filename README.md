@@ -145,6 +145,42 @@ inbox you connect.
 
 Refresh tokens are encrypted at rest with a key derived from `SECRET_KEY`.
 
+## Other mailboxes (SMTP/IMAP)
+
+Any mailbox that offers SMTP and IMAP can send: Zoho, Yandex, Fastmail, your own mail server,
+or Gmail with an app password. **Settings → Inboxes → Add an inbox with email + password**:
+enter the address and the server settings are looked up (Thunderbird's autoconfig database,
+also through your domain's MX record), then **Test connection** and **Add inbox**.
+
+- Use an **app password** where the provider offers one (Gmail, Zoho, Yandex, Fastmail).
+- The **IMAP server** is what detects replies and bounces. Without it, only first emails go
+  out from that inbox; follow-ups are held so nobody who already answered gets one.
+- A copy of each email is filed in the Sent folder unless the provider does that itself.
+- To try a mailbox from the command line without touching the database:
+  `outreach-wise check-inbox --email you@acme.com --smtp-host smtp.acme.com --imap-host imap.acme.com --send-to you@acme.com`
+  (the password is asked for, or read from `OUTREACH_WISE_MAILBOX_PASSWORD`).
+
+## Microsoft 365 setup
+
+Exchange Online turns off password sign-in for SMTP at the end of 2026, so Microsoft 365 and
+Outlook.com mailboxes connect with Microsoft sign-in (OAuth), like Google ones.
+
+1. In the [Microsoft Entra admin center](https://entra.microsoft.com/): *App registrations →
+   New registration*. Supported account types: **Accounts in any organizational directory and
+   personal Microsoft accounts** (or only your organization). Redirect URI: **Web**,
+   `<BASE_URL>/oauth/microsoft/callback`.
+2. *API permissions → Add a permission → Microsoft Graph → Delegated permissions*:
+   `offline_access`, `openid`, `email`, `SMTP.Send` and `IMAP.AccessAsUser.All`. Then
+   **Grant admin consent** for your organization.
+3. *Certificates & secrets → New client secret*. Put the application (client) ID and the
+   secret's value in `.env` as `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` and restart.
+4. Make sure **Authenticated SMTP** is allowed for the mailbox (*Microsoft 365 admin center →
+   Users → the user → Mail → Manage email apps*), and not disabled for the whole organization.
+5. In the app: **Settings → Inboxes → Connect Microsoft 365**. The SMTP and IMAP logins are
+   tested before the inbox is saved.
+
+Microsoft rotates refresh tokens on every use; the worker stores the newest one (encrypted).
+
 ## Your lead sheet
 
 - The **first row is the header**. One column holds the email address (`email` by default;
@@ -276,6 +312,7 @@ the UI.
 | `SECRET_KEY` | — (required) | ≥ 32 random characters. Encrypts tokens, signs sessions and unsubscribe links. |
 | `ADMIN_PASSWORD` | — (required) | Web UI password (single admin). |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | — | OAuth client from Google Cloud. |
+| `MICROSOFT_CLIENT_ID` / `MICROSOFT_CLIENT_SECRET` | — | App registration in Microsoft Entra (Microsoft 365 inboxes). |
 | `BASE_URL` | `http://localhost:8000` | Public URL. Used for the OAuth redirect and unsubscribe links. |
 | `HOST` / `PORT` | `127.0.0.1` / `8000` | Listen address. |
 | `DATABASE_PATH` | `data/outreach-wise.db` | SQLite file. |
@@ -313,7 +350,9 @@ the mailto header and "unsubscribe" replies, which the default footer asks for.
 Outreach Wise sends through your real inboxes, so your domain's reputation is on the line:
 
 - Set up **SPF, DKIM and DMARC** on your sending domain (Google Workspace Admin → Gmail →
-  Authenticate email).
+  Authenticate email). Outreach Wise checks them weekly for every domain you send from (does
+  SPF cover the provider you actually send through? is a DKIM key published? what is the DMARC
+  policy?) and shows the result under **Settings → Domain health**.
 - Warm up new inboxes. Start at **20–40 emails per day per inbox** and increase slowly. Google's
   hard caps (around 500/day for Gmail, 2,000/day for Workspace) are far above what's safe for
   cold email. To reach more people, add inboxes rather than raising limits.

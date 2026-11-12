@@ -234,7 +234,7 @@ def poll(
 ) -> Counter:
     """Look at everything that arrived since the last poll (with 1h overlap; ids are deduplicated)."""
     moment = moment or db.now()
-    if transports.kind(account) == "smtp_imap":
+    if transports.reads_imap(account):
         return _poll_imap(conn, cfg, account, moment)
     refresh = decrypt(cfg.secret_key, account["refresh_token"])
     since = db.parse(account["inbox_checked_at"] or account["created_at"]) - timedelta(hours=1)
@@ -256,7 +256,7 @@ def poll(
 
 def _poll_imap(conn: sqlite3.Connection, cfg: Config, account: sqlite3.Row, moment: datetime) -> Counter:
     """IMAP: new messages by UID since the last poll (state kept in kv), first poll by date."""
-    transport = transports.SmtpImapTransport(transports.MailboxConfig.from_account(account, cfg.secret_key))
+    transport = transports.for_account(account, cfg.secret_key, None)
     key = f"imap_state:{account['id']}"
     since = db.parse(account["inbox_checked_at"] or account["created_at"]) - timedelta(days=1)
     messages, state = transport.fetch_new(db.get_kv(conn, key), since)
@@ -282,7 +282,7 @@ def check_thread(
     conn: sqlite3.Connection, cfg: Config, google: Google, account: sqlite3.Row, enrollment: sqlite3.Row
 ) -> bool:
     """Process any new messages in this enrollment's thread. True if the sequence must stop."""
-    if transports.kind(account) == "smtp_imap":
+    if transports.reads_imap(account):
         # IMAP has no thread lookup; an incremental poll of the inbox is just as cheap.
         _poll_imap(conn, cfg, account, db.now())
         status = conn.execute("SELECT status FROM enrollments WHERE id = ?", (enrollment["id"],)).fetchone()

@@ -12,7 +12,8 @@ import imaplib
 import re
 import smtplib
 import ssl
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from email import policy
 from email.message import EmailMessage
@@ -63,6 +64,8 @@ class MailboxConfig:
     save_sent: bool | None = None
     sent_folder: str = ""  # empty: detect from the \Sent special-use flag or common names
     timeout: float = TIMEOUT
+    # OAuth (XOAUTH2) instead of a password: returns a fresh access token (Microsoft 365).
+    access_token: Callable[[], str] | None = field(default=None, compare=False, repr=False)
 
     def __post_init__(self):
         for security in (self.smtp_security, self.imap_security):
@@ -107,12 +110,24 @@ class SmtpImapTransport:
     def __init__(self, config: MailboxConfig):
         self.config = config
 
+    def _token(self) -> str:
+        """A current OAuth access token; sign-in problems become AuthError / TransportError."""
+        from ..microsoft import MicrosoftAuthError, MicrosoftError  # noqa: PLC0415
+
+        try:
+            return self.config.access_token()
+        except MicrosoftAuthError as err:
+            raise AuthError(str(err)) from err
+        except MicrosoftError as err:
+            raise TransportError(str(err), retryable=err.retryable) from err
+
     # --- SMTP ---------------------------------------------------------------------------------
 
     def _smtp(self) -> smtplib.SMTP:
         """Connected and logged in. Raises AuthError or a retryable TransportError: nothing has
         been sent yet, so every failure here is safe to retry."""
         c = self.config
+        token = self._token() if c.access_token else None  # before connecting: nothing to clean up
         try:
             if c.smtp_security == "ssl":
                 smtp = smtplib.SMTP_SSL(
@@ -129,7 +144,15 @@ class SmtpImapTransport:
             if c.smtp_security == "starttls":
                 smtp.starttls(context=ssl.create_default_context())
                 smtp.ehlo()
-            smtp.login(c.username, c.password)
+            if token:
+                auth = _xoauth2(c.username, token)
+                smtp.auth(
+                    "XOAUTH2",
+                    lambda challenge=None: auth if challenge is None else "",
+                    initial_response_ok=True,
+                )
+            else:
+                smtp.login(c.username, c.password)
         except smtplib.SMTPAuthenticationError as err:
             _close(smtp)
             raise AuthError(
@@ -190,6 +213,7 @@ class SmtpImapTransport:
         c = self.config
         if not c.imap_host:
             raise TransportError("No IMAP server configured")
+        token = self._token() if c.access_token else None
         try:
             if c.imap_security == "ssl":
                 box = MailBox(c.imap_host, c.imap_port, timeout=c.timeout)
@@ -202,9 +226,11 @@ class SmtpImapTransport:
                 f"Could not connect to {c.imap_host}:{c.imap_port}: {err}", retryable=True
             ) from err
         try:
+            if token:
+                return box.xoauth2(c.username, token, initial_folder=None)
             return box.login(c.username, c.password, initial_folder=None)
-        except MailboxLoginError as err:
-            raise AuthError(f"IMAP login failed for {c.username}") from err
+        except (MailboxLoginError, imaplib.IMAP4.error) as err:
+            raise AuthError(f"IMAP login failed for {c.username}: {err}") from err
         except (OSError, ImapToolsError) as err:
             raise TransportError(f"IMAP login to {c.imap_host} failed: {err}", retryable=True) from err
 
@@ -326,6 +352,11 @@ class SmtpImapTransport:
         self.check_smtp()
         if self.config.imap_host:
             self.check_imap()
+
+
+def _xoauth2(username: str, token: str) -> str:
+    """The SASL XOAUTH2 initial response (smtplib base64-encodes it)."""
+    return f"user={username}\x01auth=Bearer {token}\x01\x01"
 
 
 def _strip_html(markup: str) -> str:
