@@ -35,22 +35,61 @@ def spreadsheet_id(url_or_id: str) -> str:
     return match.group(1) if match else url_or_id.strip()
 
 
-def parse_rows(rows: list[list[str]], email_column: str = "email") -> tuple[list[dict], dict]:
-    """Turn raw sheet values (header row first) into unique leads plus counters."""
-    stats = {"rows": 0, "invalid": 0, "duplicates": 0}
+def column_letter(index: int) -> str:
+    """0 -> "a", 25 -> "z", 26 -> "aa": the sheet's own column letters."""
+    letters = ""
+    index += 1
+    while index:
+        index, rest = divmod(index - 1, 26)
+        letters = chr(97 + rest) + letters
+    return letters
+
+
+def has_header(first_row: list[str]) -> bool:
+    """A first row that contains an email address is data, not a header."""
+    return not any(normalize_email(cell) for cell in first_row)
+
+
+def parse_rows(
+    rows: list[list[str]], email_column: str = "email", column_names: str = ""
+) -> tuple[list[dict], dict]:
+    """Turn raw sheet values into unique leads plus counters.
+
+    With a header row, every header becomes a variable name. Without one (detected
+    automatically), columns are named by `column_names` ("email, first_name, ...") or
+    after their letters ({{column_b}}), and the email column is found by its contents.
+    """
+    stats = {"rows": 0, "no_email": 0, "invalid": 0, "duplicates": 0, "header": True}
     if not rows:
         return [], stats
-    header = [normalize_key(h) for h in rows[0]]
-    email_key = normalize_key(email_column)
-    if email_key not in header:
-        email_key = next((k for k in EMAIL_COLUMN_GUESSES if k in header), None)
-        if not email_key:
-            raise SyncError(
-                f"No '{email_column}' column in the header row (found: {', '.join(filter(None, header))})"
-            )
+    if has_header(rows[0]):
+        header, data = [normalize_key(h) for h in rows[0]], rows[1:]
+        email_key = normalize_key(email_column)
+        if email_key not in header:
+            email_key = next((k for k in EMAIL_COLUMN_GUESSES if k in header), None)
+            if not email_key:
+                raise SyncError(
+                    f"No '{email_column}' column in the header row (found: {', '.join(filter(None, header))})"
+                )
+    else:
+        stats["header"] = False
+        data = rows
+        width = max(len(row) for row in rows)
+        names = [normalize_key(name) for name in column_names.split(",")] if column_names.strip() else []
+        header = [
+            names[i] if i < len(names) and names[i] else f"column_{column_letter(i)}" for i in range(width)
+        ]
+        sample = rows[:200]
+        email_index = max(
+            range(width),
+            key=lambda i: sum(1 for row in sample if i < len(row) and normalize_email(row[i])),
+        )
+        if header[email_index].startswith("column_"):
+            header[email_index] = "email"
+        email_key = header[email_index]
 
     leads, seen = [], set()
-    for row in rows[1:]:
+    for row in data:
         if not any(str(cell).strip() for cell in row):
             continue
         stats["rows"] += 1
@@ -59,7 +98,10 @@ def parse_rows(rows: list[list[str]], email_column: str = "email") -> tuple[list
             for key, value in zip(header, row, strict=False)
             if key and str(value).strip()
         }
-        email = normalize_email(fields.get(email_key, ""))
+        if not fields.get(email_key):
+            stats["no_email"] += 1  # e.g. a lead whose email isn't found yet: not an error
+            continue
+        email = normalize_email(fields[email_key])
         if not email:
             stats["invalid"] += 1
             continue
@@ -94,7 +136,9 @@ def sync(conn: sqlite3.Connection, cfg: Config, google: Google) -> dict:
     settings = db.get_settings(conn)
     if not settings["sheet_url"]:
         raise SyncError("No Google Sheet configured (Settings → Lead source).")
-    account = conn.execute("SELECT * FROM accounts WHERE enabled = 1 ORDER BY id LIMIT 1").fetchone()
+    account = conn.execute(
+        "SELECT * FROM accounts WHERE enabled = 1 AND transport = 'gmail_api' ORDER BY id LIMIT 1"
+    ).fetchone()
     if not account:
         raise SyncError("Connect a Google account first (Settings → Inboxes).")
 
@@ -103,14 +147,15 @@ def sync(conn: sqlite3.Connection, cfg: Config, google: Google) -> dict:
         spreadsheet_id(settings["sheet_url"]),
         settings["sheet_tab"] or "Sheet1",
     )
-    leads, stats = parse_rows(rows, settings["sheet_email_column"] or "email")
+    leads, stats = parse_rows(rows, settings["sheet_email_column"] or "email", settings["sheet_columns"])
     stats["created"], stats["updated"] = upsert_leads(conn, leads)
     stats["enrolled"] = campaigns.auto_enroll(conn)
     db.log_event(
         conn,
         "sync",
         f"Sheet sync: {stats['created']} new, {stats['updated']} updated, "
-        f"{stats['duplicates']} duplicate and {stats['invalid']} invalid rows skipped"
+        f"{stats['duplicates']} duplicate and {stats['invalid']} invalid rows skipped, "
+        f"{stats['no_email']} rows without an email"
         + (f", {stats['enrolled']} auto-enrolled" if stats["enrolled"] else ""),
     )
     db.set_kv(conn, "last_sync", {"at": db.iso(db.now()), **stats})

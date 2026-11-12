@@ -314,8 +314,9 @@ DEFAULT_SETTINGS = {
     "sheet_url": "",
     "sheet_tab": "Sheet1",
     "sheet_email_column": "email",
+    "sheet_columns": "",  # names for a sheet without a header row
     "sync_interval_minutes": 30,
-    "inbox_poll_minutes": 5,
+    "inbox_poll_minutes": 2,
     "sending_paused": False,
     # AI personalization (opt-in). Keys live encrypted in kv (ai_api_key, youtube_api_key).
     "ai_enabled": False,

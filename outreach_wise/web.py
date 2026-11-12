@@ -7,6 +7,7 @@ import secrets
 import time
 from collections import defaultdict
 from datetime import datetime, timedelta
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
@@ -92,8 +93,11 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         return ZoneInfo(db.get_settings(conn())["timezone"])
 
     @app.template_filter("local")
-    def local_time(value: str | None, fmt: str = "%b %d, %H:%M") -> str:
-        return db.parse(value).astimezone(tz()).strftime(fmt) if value else "—"
+    def local_time(value: str | datetime | None, fmt: str = "%b %d, %H:%M") -> str:
+        if not value:
+            return "—"
+        moment = value if isinstance(value, datetime) else db.parse(value)
+        return moment.astimezone(tz()).strftime(fmt)
 
     @app.template_filter("pct")
     def pct(value: float) -> str:
@@ -225,6 +229,22 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             last_sync=db.get_kv(c, "last_sync"),
         )
 
+    # --- send queue ---------------------------------------------------------------------------
+
+    @app.get("/queue")
+    def queue():
+        c = conn()
+        settings = db.get_settings(c)
+        return render_template("queue.html", q=sender.upcoming(c, db.now(), settings))
+
+    @app.post("/inbox/check")
+    def check_inbox_now():
+        c = conn()
+        c.execute("DELETE FROM kv WHERE key = 'job:inbox'")  # the worker polls on its next tick
+        c.commit()
+        flash("Checking inboxes for replies now — refresh in a few seconds.", "success")
+        return back(url_for("dashboard"))
+
     # --- leads ------------------------------------------------------------------------------
 
     @app.get("/leads")
@@ -312,7 +332,7 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             c.commit()
             flash(
                 f"Synced: {stats['created']} new, {stats['updated']} updated, {stats['duplicates']} duplicates and "
-                f"{stats['invalid']} invalid rows skipped.",
+                f"{stats['invalid']} invalid rows skipped, {stats['no_email']} rows without an email.",
                 "success",
             )
         except (sheets.SyncError, GoogleError, ValueError) as err:
@@ -784,6 +804,9 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
                     "sheet_url": form.get("sheet_url", "").strip(),
                     "sheet_tab": form.get("sheet_tab", "").strip() or "Sheet1",
                     "sheet_email_column": form.get("sheet_email_column", "").strip() or "email",
+                    "sheet_columns": ", ".join(
+                        n.strip() for n in form.get("sheet_columns", "").split(",") if n.strip()
+                    ),
                     "sync_interval_minutes": _bounded(form, "sync_interval_minutes", 5, 1440),
                 }
             elif section == "sending":
@@ -873,6 +896,10 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         c.commit()
         flash(f"Connected {result['email']}.", "success")
         return redirect(url_for("settings_page"))
+
+    callback_path = urlparse(cfg.oauth_redirect_uri).path
+    if callback_path != "/oauth/callback":  # reuse a redirect URI already registered on the client
+        app.add_url_rule(callback_path, "oauth_callback_registered", oauth_callback)
 
     @app.post("/accounts/<int:account_id>")
     def account_update(account_id: int):

@@ -211,3 +211,14 @@ def test_pacing_spreads_quota_over_the_window(clock):
     gap = sender.pacing_gap(clock(), settings, remaining=6)  # 7h left, 6 more emails after this one
     assert timedelta(minutes=40) <= gap <= timedelta(minutes=80)
     assert sender.pacing_gap(clock(), settings, remaining=1) < timedelta(hours=5)  # last one fits the window
+
+
+def test_queue_estimates_follow_pacing_and_daily_limit(conn, cfg, google, account):
+    make_campaign(conn, live=True, leads=4)
+    conn.execute("UPDATE accounts SET daily_limit = 3")
+    conn.commit()
+    q = sender.upcoming(conn, db.now(), db.get_settings(conn))
+    assert (q["total"], q["due_now"]) == (4, 4)
+    etas = [row["eta"] for row in q["rows"]]
+    assert etas[0] == db.now() and etas[0] < etas[1] < etas[2]
+    assert etas[3] is None  # over today's limit of 3

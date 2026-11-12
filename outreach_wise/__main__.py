@@ -98,12 +98,19 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(check_inbox.run(args))
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per Google API call is noise
     load_dotenv()
     try:
         cfg = load_config()
     except ConfigError as err:
         sys.exit(f"Configuration error: {err}")
     db.init_db(cfg.database_path)
+    if cfg.redirect_uri_mismatch:
+        logging.getLogger("outreach_wise").warning(
+            "Your Google OAuth client does not list %s as an authorized redirect URI; "
+            "add it in Google Cloud Console or connecting an inbox will fail.",
+            cfg.oauth_redirect_uri,
+        )
 
     if args.command == "worker":
         run_worker(cfg)

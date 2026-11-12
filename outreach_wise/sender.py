@@ -59,12 +59,12 @@ def day_start(moment: datetime, settings: dict) -> datetime:
     return datetime.combine(moment.astimezone(tz).date(), time(0), tzinfo=tz)
 
 
-def pacing_gap(moment: datetime, settings: dict, remaining: int) -> timedelta:
+def pacing_gap(moment: datetime, settings: dict, remaining: int, jitter: bool = True) -> timedelta:
     """Delay before an inbox's next send: spreads the `remaining` daily quota evenly over
     what's left of today's window (so the last one still lands inside it), with jitter."""
     seconds_left = max((window_end(moment, settings) - moment).total_seconds(), 0)
     even = seconds_left / (max(remaining, 0) + 1)
-    gap = max(settings["min_gap_seconds"], even * random.uniform(0.7, 1.3))
+    gap = max(settings["min_gap_seconds"], even * (random.uniform(0.7, 1.3) if jitter else 1))
     return timedelta(seconds=int(gap))
 
 
@@ -149,6 +149,76 @@ def due_enrollments(
         """,
         {"mode": mode, "now": db.iso(moment), "account_id": account_id, "limit": limit},
     ).fetchall()
+
+
+def upcoming(conn: sqlite3.Connection, moment: datetime, settings: dict, limit: int = 300) -> dict:
+    """The send queue as the worker will work through it, with a rough send-time estimate for
+    live emails that fit in today's window (pacing replayed without jitter)."""
+    rows = [
+        dict(row)
+        for row in conn.execute(
+            """
+            SELECT e.*, l.email, c.name AS campaign_name, c.mode, c.start_at, a.email AS account_email
+            FROM enrollments e
+            JOIN campaigns c ON c.id = e.campaign_id
+            JOIN leads l ON l.id = e.lead_id
+            LEFT JOIN accounts a ON a.id = e.account_id
+            WHERE e.status = 'active' AND c.status = 'active'
+            """
+        )
+    ]
+    for row in rows:
+        due = db.parse(row["next_send_at"])
+        if row["start_at"]:
+            due = max(due, db.parse(row["start_at"]))
+        row["due"], row["due_now"] = due, due <= moment
+    # Due emails first (follow-ups before first emails, like the worker), then by due time.
+    rows.sort(key=lambda r: (not r["due_now"], not (r["due_now"] and r["next_step"] > 1), r["due"], r["id"]))
+
+    open_now = in_window(moment, settings) and not settings["sending_paused"]
+    end = window_end(moment, settings)
+    inboxes = []
+    for account in conn.execute("SELECT * FROM accounts ORDER BY id"):
+        used = sent_today(conn, account["id"], moment, settings)
+        slot = db.parse(account["next_send_at"]) if account["next_send_at"] else moment
+        inboxes.append(
+            {
+                "id": account["id"],
+                "email": account["email"],
+                "enabled": bool(account["enabled"]),
+                "used": used,
+                "limit": account["daily_limit"],
+                "quota": max(account["daily_limit"] - used, 0),
+                "slot": max(slot, moment),
+                "next_slot": max(slot, moment),
+                "gap": pacing_gap(moment, settings, account["daily_limit"] - used - 1, jitter=False),
+            }
+        )
+
+    for row in rows:
+        row["eta"] = None
+        if row["mode"] != "live" or not open_now:
+            continue
+        candidates = [
+            i for i in inboxes if i["enabled"] and i["quota"] > 0 and row["account_id"] in (None, i["id"])
+        ]
+        if not candidates:
+            continue
+        inbox = min(candidates, key=lambda i: max(i["slot"], row["due"]))
+        eta = max(inbox["slot"], row["due"])
+        if eta >= end:
+            continue
+        row["eta"] = eta
+        inbox["quota"] -= 1
+        inbox["slot"] = eta + pacing_gap(eta, settings, inbox["quota"], jitter=False)
+    return {
+        "rows": rows[:limit],
+        "total": len(rows),
+        "due_now": sum(r["due_now"] for r in rows),
+        "inboxes": inboxes,
+        "open_now": open_now,
+        "window_end": end,
+    }
 
 
 # --- one enrollment -------------------------------------------------------------------------

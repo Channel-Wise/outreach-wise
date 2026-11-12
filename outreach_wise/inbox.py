@@ -57,12 +57,21 @@ def sender_of(message: dict) -> str:
     return parseaddr(message["headers"].get("from", ""))[1].lower()
 
 
-def own_text(snippet: str) -> str:
+def own_text(snippet: str, own_email: str = "") -> str:
+    """The reply's own words, without quoted history. The quote header names our address in
+    every language ("On … <me@x> wrote:", "<me@x>, 12 Kas 2026 … yazdı:"), so cut there too."""
+    cut = len(snippet)
     match = QUOTE_START.search(snippet)
-    return snippet[: match.start()] if match else snippet
+    if match:
+        cut = match.start()
+    if own_email:
+        position = snippet.lower().find(own_email.lower())
+        if position != -1:
+            cut = min(cut, position)
+    return snippet[:cut]
 
 
-def classify(message: dict) -> str:
+def classify(message: dict, own_email: str = "") -> str:
     headers = message["headers"]
     sender = sender_of(message)
     subject = headers.get("subject", "").strip().lower()
@@ -80,7 +89,9 @@ def classify(message: dict) -> str:
     )
     if automatic or subject.startswith(AUTO_REPLY_SUBJECTS):
         return "auto_reply"
-    if UNSUBSCRIBE.search(subject) or UNSUBSCRIBE.search(own_text(html.unescape(message["snippet"]))):
+    if UNSUBSCRIBE.search(subject) or UNSUBSCRIBE.search(
+        own_text(html.unescape(message["snippet"]), own_email)
+    ):
         return "unsubscribe"
     return "reply"
 
@@ -105,7 +116,7 @@ def handle(conn: sqlite3.Connection, account: sqlite3.Row, message: dict, moment
             message = {**message, "thread_id": match["gmail_thread_id"]}
     lead_id = match["lead_id"] if match else None
     enrollment_id = match["enrollment_id"] if match else None
-    kind = classify(message)
+    kind = classify(message, account["email"])
     snippet = html.unescape(message["snippet"])
 
     if lead_id is None:
