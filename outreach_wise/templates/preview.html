@@ -42,9 +42,21 @@
         <h2>{{ step.position }}. {{ "First email" if step.position == 1 else "Follow-up " ~ (step.position - 1) }}</h2>
         <p>{{ "Sent first" if step.position == 1 else "Sent " ~ step.delay_days ~ " day" ~ ("s" if step.delay_days != 1) ~ " after the previous email, if no reply" }}</p>
       </div></div>
+      {% if step.uncovered %}
+      <div class="flash info">{{ icon("info") }}<span>Leads who got {{ step.uncovered | join(", ") }} in the previous email have no follow-up here — their sequence ends after that email.</span></div>
+      {% endif %}
       {% for v in step.variants %}
         <div style="margin-bottom:12px">
-          <div class="row" style="margin-bottom:6px"><span class="variant-label">Variant {{ v.label }}</span>{% if not v.active %}<span class="badge">inactive</span>{% endif %}</div>
+          <div class="row" style="margin-bottom:6px;gap:6px">
+            <span class="variant-label">Variant {{ v.label }}</span>
+            {% if not v.active %}<span class="badge">inactive</span>
+            {% elif v.unreached %}<span class="badge warn">nobody gets this email</span>
+            {% elif step.position == 1 %}{% if v.routes and step.variants | selectattr("active") | list | length > 1 %}<span class="route">{{ v.routes[0].pct }}% of new leads</span>{% endif %}
+            {% elif step.multi_previous or v.routes | length > 1 or v.routes[0].pct < 100 %}
+              <span class="muted small">Sent to</span>
+              {% for r in v.routes %}<span class="route v-{{ r.after }}"><i></i>{{ r.pct }}% of leads who got {{ r.after }}</span>{% endfor %}
+            {% endif %}
+          </div>
           {% if v.renders %}
             {{ mail(v.renders[0]) }}
             {% if v.renders | length > 1 %}
