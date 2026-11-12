@@ -13,6 +13,10 @@
     <form method="post" action="{{ url_for('suppress_lead', lead_id=lead.id) }}" class="inline" data-confirm="Never email this lead again?">{{ csrf() }}
       <button class="btn">{{ icon("suppressions") }}Suppress</button></form>
     {% endif %}
+    <form method="post" action="{{ url_for('delete_leads') }}" class="inline" data-ok="Delete"
+      data-confirm="Delete this lead? Its campaign history, dry-run emails and AI fields go with it, and this can't be undone. If it's still in your sheet, the next sync adds it back as new.">{{ csrf() }}
+      <input type="hidden" name="lead_id" value="{{ lead.id }}">
+      <button class="btn ghost danger-text">Delete</button></form>
   </div>
 </div>
 

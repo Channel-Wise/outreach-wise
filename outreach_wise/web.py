@@ -323,6 +323,23 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         flash(f"{row['email']} will never be emailed.", "success")
         return redirect(url_for("lead", lead_id=lead_id))
 
+    @app.post("/leads/delete")
+    def delete_leads():
+        c = conn()
+        ids = sorted({int(v) for v in request.form.getlist("lead_id") if v.isdigit()})
+        deleted, kept = delete_lead_rows(c, ids)
+        c.commit()
+        if deleted:
+            flash(f"Deleted {deleted} lead{'s' if deleted != 1 else ''}.", "success")
+        if kept:
+            flash(
+                f"Kept {len(kept)} lead{'s' if len(kept) != 1 else ''} that already got a real email"
+                f" ({', '.join(kept[:3])}{'…' if len(kept) > 3 else ''}). Suppress them instead.",
+                "error",
+            )
+        back = request.form.get("next", "")
+        return redirect(back if back.startswith("/leads") else url_for("leads"))
+
     @app.post("/leads/sync")
     def sync_leads():
         c = conn()
@@ -970,6 +987,30 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
 
 def _optional_id(value: str | None) -> int | None:
     return int(value) if value and value.isdigit() else None
+
+
+def delete_lead_rows(conn, lead_ids: list[int]) -> tuple[int, list[str]]:
+    """Delete leads with their enrollments, dry-run messages and AI fields. Leads that already
+    got a real email are kept (deleting them would let a re-sync email them again as new).
+    Returns (deleted count, emails kept)."""
+    deleted, kept = 0, []
+    for lead_id in lead_ids:
+        row = conn.execute("SELECT id, email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        if not row:
+            continue
+        real = conn.execute(
+            "SELECT 1 FROM messages WHERE lead_id = ? AND mode = 'live' AND status IN ('sent', 'sending')",
+            (lead_id,),
+        ).fetchone()
+        if real:
+            kept.append(row["email"])
+            continue
+        conn.execute("DELETE FROM messages WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+        deleted += 1
+    if deleted:
+        db.log_event(conn, "leads", f"Deleted {deleted} lead{'s' if deleted != 1 else ''}")
+    return deleted, kept
 
 
 def _campaign_report(conn, campaign, zone: ZoneInfo) -> dict:

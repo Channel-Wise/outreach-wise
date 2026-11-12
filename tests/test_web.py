@@ -107,6 +107,33 @@ def test_public_unsubscribe_page(client, conn, cfg):
     assert client.get("/u/forged-token").status_code == 404
 
 
+def test_delete_leads(client, conn, cfg, google, account):
+    make_campaign(conn, live=True, leads=3)
+    sender.run_send_cycle(conn, cfg, google)  # one real email (lead 1), then the pacing gap
+    sent = {
+        r[0] for r in conn.execute("SELECT lead_id FROM messages WHERE mode = 'live' AND status = 'sent'")
+    }
+    assert sent
+    token = login(client)
+    page = client.get("/leads").get_data(as_text=True)
+    assert 'name="lead_id" value="1"' in page and "Delete selected" in page
+    assert 'action="/leads/delete"' in client.get("/leads/2").get_data(as_text=True)
+
+    response = client.post(
+        "/leads/delete", data={"csrf": token, "lead_id": ["1", "2", "3"], "next": "/leads?q=x"}
+    )
+    assert response.status_code == 302 and response.headers["Location"].endswith("/leads?q=x")
+    left = {r[0] for r in conn.execute("SELECT id FROM leads")}
+    assert left == sent  # leads that got a real email are kept
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM enrollments WHERE lead_id NOT IN (SELECT id FROM leads)"
+        ).fetchone()[0]
+        == 0
+    )
+    assert "already got a real email" in client.get("/leads").get_data(as_text=True)
+
+
 def test_pause_all_sending(client, conn):
     token = login(client)
     client.post("/settings/pause", data={"csrf": token})
