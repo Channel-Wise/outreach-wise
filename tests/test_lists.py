@@ -127,6 +127,23 @@ def test_enroll_and_auto_enroll_from_a_list(conn):
     assert campaigns.auto_enroll(conn) == 1  # only lead 5, from the campaign's list
 
 
+def test_preview_before_anyone_is_enrolled(conn, cfg, client):
+    add_leads(conn, 4)
+    finance, _ = lists.create(conn, "Finance")
+    lists.add_members(conn, finance, [3, 4])
+    campaign_id = campaigns.create(conn, "Nobody enrolled yet")
+
+    def samples():
+        preview = campaigns.preview(conn, cfg, campaign_id, footer="")
+        return [r["email"] for r in preview["steps"][0]["variants"][0]["renders"]]
+
+    assert samples() == ["lead1@leads.io", "lead2@leads.io", "lead3@leads.io"]  # from any list
+    conn.execute("UPDATE campaigns SET list_id = ? WHERE id = ?", (finance, campaign_id))
+    assert samples() == ["lead3@leads.io", "lead4@leads.io"]  # from the campaign's list
+    conn.commit()
+    assert client.get(f"/campaigns/{campaign_id}/preview").status_code == 200
+
+
 # --- pages ----------------------------------------------------------------------------------
 
 

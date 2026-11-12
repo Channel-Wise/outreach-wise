@@ -639,6 +639,9 @@ def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str
     """Render every variant for a few real leads, and count leads with missing variables."""
     steps = steps_with_variants(conn, campaign_id)
     annotate_routing(steps)
+    campaign = conn.execute(
+        "SELECT playbook_id, list_id FROM campaigns WHERE id = ?", (campaign_id,)
+    ).fetchone()
     enrolled = conn.execute(
         "SELECT l.* FROM enrollments e JOIN leads l ON l.id = e.lead_id"
         " WHERE e.campaign_id = ? AND e.status = 'active' ORDER BY e.id",
@@ -646,14 +649,14 @@ def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str
     ).fetchall()
     sample_leads = (
         enrolled[:sample]
-        or conn.execute(
+        or conn.execute(  # nobody enrolled yet: the leads enrolling would pick, from the campaign's list
             f"SELECT * FROM leads WHERE id IN ({_eligible_sql(False)} LIMIT {int(sample)})",
-            {"campaign_id": campaign_id},
+            {"campaign_id": campaign_id, "list_id": campaign["list_id"]},
         ).fetchall()
     )
 
     first_subject = steps[0]["variants"][0]["subject"] if steps else ""
-    playbook_id = conn.execute("SELECT playbook_id FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()[0]
+    playbook_id = campaign["playbook_id"]
     for step in steps:
         for variant in step["variants"]:
             variant["renders"] = []
