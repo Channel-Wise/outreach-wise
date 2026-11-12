@@ -724,3 +724,8 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .smtp-steps .ok { color: var(--good); }
 .smtp-steps .bad { color: var(--bad); }
 .smtp-steps .note { color: var(--muted); }
+
+/* --- preview: who gets each email ------------------------------------------------------- */
+.route { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 550; color: var(--text-2); padding: 1px 8px 1px 6px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-2); }
+.route i { width: 8px; height: 8px; border-radius: 50%; background: var(--v, var(--muted)); }
+.route:not([class*="v-"]) i { display: none; }
