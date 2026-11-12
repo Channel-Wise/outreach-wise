@@ -46,6 +46,63 @@ def test_quoted_footer_is_ignored_in_any_language():
     assert inbox.classify(msg(snippet=real), "me@sender.io") == "unsubscribe"
 
 
+@pytest.mark.parametrize(
+    "text",
+    [
+        "Abonelikten çık",
+        "ABONELİKTEN ÇIKMAK İSTİYORUM",
+        "Beni listeden çıkarın lütfen.",
+        "Beni mail listenizden çıkartır mısınız?",
+        "beni listenizden cikarir misiniz",  # typed without Turkish letters
+        "Listenizden çıkarmanızı rica ederim.",
+        "Lütfen beni listenizden silin",
+        "Beni çıkarın",
+        "Bana e-posta göndermeyin",
+        "Lütfen bir daha mail atmayın",
+        "Maillerinizi göndermeyi bırakın",
+        "Sizden e-posta almak istemiyorum",
+        "Bir daha yazmayın",
+        "Benimle iletişime geçmeyin",
+        "Aboneliğimi iptal edin",
+    ],
+)
+def test_turkish_unsubscribe_requests(text):
+    assert inbox.classify(msg(snippet=text)) == "unsubscribe"
+    assert inbox.classify(msg(subject=text, snippet="")) == "unsubscribe"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "İlgilenmiyorum, teşekkürler",  # a no, which stops the sequence, but not an unsubscribe
+        "Bana mail atın, detayları konuşalım",
+        "Beni listeden çıkarmayın lütfen",
+        "Abonelikten çıkmak istemiyorum",
+        "Kanalımda abonelikten çıkanlar arttı",  # a creator talking about their own channel
+        "Aboneliğimi iptal ettim, Premium çok pahalı",
+        "Videoyu oynatma listesinden çıkardım",
+        "Mail atmayı unutmayın!",
+        "Bu e-postayı yanlışlıkla aldıysanız lütfen siliniz ve başkalarına göndermeyiniz.",  # a disclaimer
+    ],
+)
+def test_turkish_replies_that_are_not_unsubscribes(text):
+    assert inbox.classify(msg(snippet=text)) == "reply"
+
+
+def test_quoted_turkish_footer_is_not_an_unsubscribe():
+    footer = 'Bir daha e-posta almak istemiyorsanız "abonelikten çık" yazmanız yeterli.'
+    assert inbox.asks_to_unsubscribe(footer)  # so only the quote detection keeps it out
+    for quote in (
+        "Kimden: Orhun Gönderildi: 12 Kasım 2026 Perşembe 15:20 Kime: Eren Konu: Kanalınız",  # Outlook
+        "-----Özgün İleti----- Kimden: Orhun",
+        "12.11.2026 15:20 tarihinde Orhun yazdı:",  # Thunderbird: a name, not our address
+    ):
+        snippet = f"Perşembe uygun, konuşalım. {quote} Merhaba Eren, ... {footer}"
+        assert inbox.classify(msg(snippet=snippet), "me@sender.io") == "reply", quote
+    real = f"Beni listeden çıkarın. Kimden: Orhun Gönderildi: 12 Kasım 2026 {footer}"
+    assert inbox.classify(msg(snippet=real), "me@sender.io") == "unsubscribe"
+
+
 # --- polling ----------------------------------------------------------------------------------
 
 
