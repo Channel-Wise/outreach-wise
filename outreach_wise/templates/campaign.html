@@ -36,14 +36,15 @@
 <section class="card" style="margin-bottom:16px">
   <div class="row" style="justify-content:space-between">
     <div><h2>AI personalization</h2><p class="muted small" style="margin:2px 0 0">Playbook: {{ ai.playbook.name }} · {{ "emails wait for your approval" if campaign.require_approval else "drafts are sent without review" }}</p></div>
-    <a class="small" href="{{ url_for('review', campaign=campaign.id) }}">Open review ({{ ai.counts.needs_review }} waiting) →</a>
+    {% if ai.counts.needs_review %}<a class="btn primary sm" href="{{ url_for('review', campaign=campaign.id) }}">{{ icon("review") }}Review {{ ai.counts.needs_review }} email{{ 's' if ai.counts.needs_review != 1 }}</a>
+    {% else %}<a class="small" href="{{ url_for('review', campaign=campaign.id, status='approved') }}">Open review →</a>{% endif %}
   </div>
   {% if ai.total %}
   {% set t = ai.total %}
   <div class="ai-meter" role="img" aria-label="{{ ai.counts.approved }} approved, {{ ai.counts.needs_review }} waiting, {{ ai.counts.pending }} researching, {{ ai.counts.skipped + ai.counts.failed }} skipped or failed">
     <span style="width:{{ 100 * ai.counts.approved / t }}%;background:var(--good)"></span><span style="width:{{ 100 * ai.counts.needs_review / t }}%;background:var(--accent)"></span><span style="width:{{ 100 * ai.counts.pending / t }}%;background:var(--accent-soft)"></span><span style="width:{{ 100 * (ai.counts.skipped + ai.counts.failed) / t }}%;background:var(--border-strong)"></span>
   </div>
-  <div class="ai-legend"><span><i style="background:var(--good)"></i>{{ ai.counts.approved }} approved</span><span><i style="background:var(--accent)"></i>{{ ai.counts.needs_review }} waiting for you</span><span><i style="background:var(--accent-soft)"></i>{{ ai.counts.pending }} researching</span><span><i style="background:var(--border-strong)"></i>{{ ai.counts.skipped }} skipped{% if ai.counts.failed %} · {{ ai.counts.failed }} failed{% endif %}</span></div>
+  <div class="ai-legend"><a href="{{ url_for('review', campaign=campaign.id, status='approved') }}"><i style="background:var(--good)"></i>{{ ai.counts.approved }} approved</a><a href="{{ url_for('review', campaign=campaign.id, status='needs_review') }}"><i style="background:var(--accent)"></i>{{ ai.counts.needs_review }} waiting for you</a><a href="{{ url_for('review', campaign=campaign.id, status='pending') }}"><i style="background:var(--accent-soft)"></i>{{ ai.counts.pending }} researching</a><a href="{{ url_for('review', campaign=campaign.id, status='skipped') }}"><i style="background:var(--border-strong)"></i>{{ ai.counts.skipped }} skipped</a>{% if ai.counts.failed %}<a href="{{ url_for('review', campaign=campaign.id, status='failed') }}"><i style="background:var(--bad)"></i>{{ ai.counts.failed }} failed</a>{% endif %}</div>
   {% else %}
   <p class="muted small" style="margin:8px 0 0">AI fields are written about {{ settings.ai_lookahead_hours }} hours before each email that uses them is due, only for leads whose email variant needs them.</p>
   {% endif %}
@@ -213,13 +214,16 @@
     </div>
     {% if enrolled %}
     <div class="table-wrap" style="max-height:480px;overflow:auto"><table class="table sticky">
-      <thead><tr><th style="width:36px"><input type="checkbox" data-e="all" aria-label="Select all"></th><th>Lead</th><th>Status</th><th>Next step</th><th>Next send</th></tr></thead>
+      <thead><tr><th style="width:36px"><input type="checkbox" data-e="all" aria-label="Select all"></th><th>Lead</th><th>Status</th>{% if ai.enabled and ai.playbook %}<th>AI fields</th>{% endif %}<th>Next step</th><th>Next send</th></tr></thead>
       <tbody>
       {% for e in enrolled %}{% set f = e.fields | fields %}{% set nm = f.get('first_name') or f.get('name') or f.get('channel_name') %}
         <tr data-search="{{ (e.email ~ ' ' ~ (nm or '')) | lower }}">
           <td><input type="checkbox" name="lead_id" value="{{ e.id }}" aria-label="Select {{ e.email }}"></td>
           <td><a href="{{ url_for('lead', lead_id=e.id) }}">{{ e.email }}</a>{% if nm %}<div class="muted small">{{ nm }}</div>{% endif %}</td>
           <td>{{ badge(e.status) }}{% if e.stop_reason %}<div class="muted small">{{ e.stop_reason }}</div>{% endif %}</td>
+          {% if ai.enabled and ai.playbook %}{% set af = ai.by_lead.get(e.id) %}
+          <td>{% if af %}<a href="{{ url_for('review', campaign=campaign.id, status=af[1], id=af[0]) }}">{{ badge(af[1], ai.labels[af[1]] | lower) }}</a>{% if af[2] %}<div class="muted small" style="max-width:280px">{{ af[2] | truncate(90) }}</div>{% endif %}{% else %}<span class="muted small" title="Written about {{ settings.ai_lookahead_hours }} hours before an email that uses them is due">not yet</span>{% endif %}</td>
+          {% endif %}
           <td>{{ e.next_step if e.status == "active" else "—" }}</td>
           <td class="nowrap muted">{{ (e.next_send_at | local) if e.status == "active" else "—" }}</td>
         </tr>

@@ -467,6 +467,22 @@ def test_ai_pages_render(client, conn, ai_on, playbook_id):
     assert "{{ai_hook}}" in page and "Test creators" in page
 
 
+def test_campaign_page_leads_to_review(client, conn, cfg, ai_on, playbook_id):
+    campaign_id = ai_campaign(conn, playbook_id, leads=2)
+    scheduler.plan(conn, ai_on)
+    page = client.get(f"/campaigns/{campaign_id}").get_data(as_text=True)
+    assert "Review 1 email" not in page and "<th>AI fields</th>" in page
+    assert f"/review?campaign={campaign_id}&amp;status=pending" in page  # legend links
+
+    scheduler.run(conn, cfg, ai_on, max_items=1, provider=FakeProvider())
+    ai_id = conn.execute("SELECT id FROM ai_fields WHERE status = 'needs_review'").fetchone()[0]
+    page = client.get(f"/campaigns/{campaign_id}").get_data(as_text=True)
+    assert "Review 1 email<" in page
+    assert f"/review?campaign={campaign_id}&amp;status=needs_review&amp;id={ai_id}" in page  # per-lead link
+    review = client.get(f"/review?campaign={campaign_id}&id={ai_id}").get_data(as_text=True)
+    assert f'href="/campaigns/{campaign_id}"' in review  # back to the campaign
+
+
 def test_editor_form_saves_a_valid_playbook(client, conn, ai_on):
     data = {
         "csrf": client.csrf, "mode": "form", "playbook_id": "", "name": "Podcasts", "input_column": "website",
