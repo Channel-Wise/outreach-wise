@@ -470,6 +470,15 @@ def test_ai_pages_render(client, conn, ai_on, playbook_id):
     assert "{{ai_hook}}" in page and "Test creators" in page
 
 
+def test_queue_hides_leads_the_ai_skipped(conn, cfg, ai_on, playbook_id):
+    ai_campaign(conn, playbook_id, leads=2)
+    scheduler.plan(conn, ai_on)
+    conn.execute("UPDATE ai_fields SET status = 'skipped' WHERE id = (SELECT MIN(id) FROM ai_fields)")
+    skipped = conn.execute("SELECT lead_id FROM ai_fields WHERE status = 'skipped'").fetchone()[0]
+    rows = sender.upcoming(conn, db.now(), db.get_settings(conn))["rows"]
+    assert len(rows) == 1 and rows[0]["lead_id"] != skipped
+
+
 def test_campaign_page_leads_to_review(client, conn, cfg, ai_on, playbook_id):
     campaign_id = ai_campaign(conn, playbook_id, leads=2)
     scheduler.plan(conn, ai_on)

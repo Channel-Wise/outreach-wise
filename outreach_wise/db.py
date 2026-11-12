@@ -300,6 +300,24 @@ MIGRATIONS = [
     ALTER TABLE variants ADD COLUMN weight INTEGER NOT NULL DEFAULT 100;
     ALTER TABLE variant_links ADD COLUMN weight INTEGER NOT NULL DEFAULT 100;
     """,
+    """
+    -- Which email bounced, like replied_at for replies: the last real email of the sequence sent
+    -- before the bounce arrived. Backfilled from the bounces already recorded.
+    ALTER TABLE messages ADD COLUMN bounced_at TEXT;
+    UPDATE messages SET bounced_at = (
+        SELECT MIN(i.received_at) FROM inbound i
+        WHERE i.kind = 'bounce' AND i.enrollment_id = messages.enrollment_id AND i.received_at >= messages.sent_at
+    )
+    WHERE mode = 'live' AND status = 'sent' AND sent_at IS NOT NULL AND EXISTS (
+        SELECT 1 FROM inbound i
+        WHERE i.kind = 'bounce' AND i.enrollment_id = messages.enrollment_id AND i.received_at >= messages.sent_at
+        AND NOT EXISTS (
+            SELECT 1 FROM messages later
+            WHERE later.enrollment_id = messages.enrollment_id AND later.mode = 'live' AND later.status = 'sent'
+            AND later.sent_at > messages.sent_at AND later.sent_at <= i.received_at
+        )
+    );
+    """,
 ]
 
 DEFAULT_SETTINGS = {

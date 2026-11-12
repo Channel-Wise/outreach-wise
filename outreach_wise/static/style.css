@@ -750,4 +750,5 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .email-log .email-cell { max-width: 460px; }
 .email-log details summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .email-log details[open] summary { white-space: normal; font-weight: 600; }
+.email-log .quote.bounce strong { color: var(--bad); }
 .email-log .mail-body { margin: 8px 0 4px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; white-space: pre-wrap; font-size: 13px; }

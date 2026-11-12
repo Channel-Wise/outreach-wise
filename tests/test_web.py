@@ -168,3 +168,10 @@ def test_emails_page_lists_sent_emails(client, conn, cfg, google, account):
     assert message["to_email"] not in client.get("/emails?mode=dry_run").data.decode()
     assert message["to_email"] not in client.get("/emails?q=nothing-matches").data.decode()
     assert message["to_email"] in client.get("/emails?status=replied&campaign=1").data.decode()
+
+    conn.execute("UPDATE messages SET bounced_at = created_at, replied_at = NULL")
+    conn.execute("UPDATE inbound SET kind = 'bounce', snippet = 'Address not found'")
+    conn.commit()
+    page = client.get("/emails?status=bounced").data.decode()
+    assert message["to_email"] in page and "Address not found" in page and ">bounced<" in page
+    assert message["to_email"] not in client.get("/emails?status=sent").data.decode()  # delivered only

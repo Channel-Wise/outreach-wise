@@ -73,6 +73,10 @@ def test_poll_matches_threads_and_ignores_unrelated_mail(conn, cfg, google, acco
 
     assert [r[0] for r in conn.execute("SELECT status FROM leads ORDER BY id")] == ["replied", "bounced"]
     assert db.is_suppressed(conn, "lead2@leads.io")
+    marks = conn.execute(
+        "SELECT to_email, replied_at IS NOT NULL, bounced_at IS NOT NULL FROM messages ORDER BY id"
+    )
+    assert [tuple(r) for r in marks] == [("lead1@leads.io", 1, 0), ("lead2@leads.io", 0, 1)]
     ignored = conn.execute("SELECT * FROM inbound WHERE kind = 'ignored'").fetchone()
     assert ignored["subject"] is None and ignored["snippet"] is None and ignored["from_email"] is None
 

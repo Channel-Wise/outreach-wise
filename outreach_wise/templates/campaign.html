@@ -338,7 +338,7 @@
             <td><a href="{{ url_for('lead', lead_id=m.lead_id) }}">{{ m.to_email }}</a></td>
             <td>{{ m.position }}{{ m.label }}</td>
             <td class="truncate">{{ m.subject }}</td>
-            <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+            <td>{{ badge('bounced') if m.bounced_at else badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>

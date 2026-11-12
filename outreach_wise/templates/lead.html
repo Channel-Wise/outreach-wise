@@ -34,7 +34,7 @@
             <td>{{ m.position }}{{ m.label }}</td>
             <td><details><summary>{{ m.subject }}</summary><pre class="mail-body" style="padding:8px 0">{{ m.body }}</pre></details>
               {% if m.error %}<div class="small" style="color:var(--bad)">{{ m.error }}</div>{% endif %}</td>
-            <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+            <td>{{ badge('bounced') if m.bounced_at else badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>

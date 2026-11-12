@@ -164,6 +164,11 @@ def upcoming(conn: sqlite3.Connection, moment: datetime, settings: dict, limit: 
             JOIN leads l ON l.id = e.lead_id
             LEFT JOIN accounts a ON a.id = e.account_id
             WHERE e.status = 'active' AND c.status = 'active'
+              -- The AI skipped this lead or couldn't write for it: the send gate will stop it.
+              AND NOT EXISTS (
+                SELECT 1 FROM ai_fields f WHERE f.lead_id = e.lead_id AND f.playbook_id = c.playbook_id
+                AND f.status IN ('skipped', 'failed')
+              )
             """
         )
     ]

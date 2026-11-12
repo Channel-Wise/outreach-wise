@@ -36,7 +36,7 @@
   </select>
   <select name="status" aria-label="Status" onchange="this.form.submit()">
     <option value="">Any status</option>
-    {% for s, label in [("sent", "Sent"), ("replied", "Replied"), ("failed", "Failed")] %}<option value="{{ s }}" {{ 'selected' if filters.status == s }}>{{ label }}</option>{% endfor %}
+    {% for s, label in [("sent", "Delivered"), ("replied", "Replied"), ("bounced", "Bounced"), ("failed", "Failed")] %}<option value="{{ s }}" {{ 'selected' if filters.status == s }}>{{ label }}</option>{% endfor %}
   </select>
   <span class="spacer"></span>
   <input type="search" name="q" value="{{ filters.q }}" placeholder="Search recipient, subject or text" aria-label="Search emails" style="width:260px">
@@ -56,9 +56,10 @@
         <td class="email-cell">
           <details><summary>{{ m.subject }}</summary><pre class="mail-body">{{ m.body }}</pre></details>
           {% if m.reply_snippet %}<div class="quote small"><strong>Reply:</strong> {{ m.reply_snippet }}</div>{% endif %}
+          {% if m.bounced_at and m.bounce_snippet %}<div class="quote small bounce"><strong>Bounced:</strong> {{ m.bounce_snippet | truncate(220) }}</div>{% endif %}
           {% if m.error %}<div class="small" style="color:var(--bad)">{{ m.error }}</div>{% endif %}
         </td>
-        <td class="nowrap">{{ badge(m.status, "dry run" if m.status == "dry_run" else None) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+        <td class="nowrap">{% if m.bounced_at %}{{ badge('bounced') }}{% else %}{{ badge(m.status, "dry run" if m.status == "dry_run" else None) }}{% endif %}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
       </tr>
     {% endfor %}
     </tbody>

@@ -260,7 +260,11 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             params.append(int(filters["campaign"]))
         if filters["status"] == "replied":
             where.append("m.replied_at IS NOT NULL")
-        elif filters["status"] in ("sent", "failed", "dry_run"):
+        elif filters["status"] == "bounced":
+            where.append("m.bounced_at IS NOT NULL")
+        elif filters["status"] == "sent":
+            where.append("m.status = 'sent' AND m.bounced_at IS NULL")
+        elif filters["status"] in ("failed", "dry_run"):
             where.append("m.status = ?")
             params.append(filters["status"])
         if filters["q"]:
@@ -272,7 +276,9 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         rows = c.execute(
             "SELECT m.*, s.position, v.label, ca.name AS campaign_name, a.email AS account_email,"
             " (SELECT i.snippet FROM inbound i WHERE i.enrollment_id = m.enrollment_id AND i.kind = 'reply'"
-            "  ORDER BY i.received_at DESC LIMIT 1) AS reply_snippet"
+            "  ORDER BY i.received_at DESC LIMIT 1) AS reply_snippet,"
+            " (SELECT i.snippet FROM inbound i WHERE i.enrollment_id = m.enrollment_id AND i.kind = 'bounce'"
+            "  ORDER BY i.received_at DESC LIMIT 1) AS bounce_snippet"
             " FROM messages m JOIN steps s ON s.id = m.step_id JOIN variants v ON v.id = m.variant_id"
             " JOIN campaigns ca ON ca.id = m.campaign_id LEFT JOIN accounts a ON a.id = m.account_id"
             f" {clause} ORDER BY COALESCE(m.sent_at, m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?",
