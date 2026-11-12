@@ -10,6 +10,9 @@ data/
 client_secret*.json
 *.csv
 *.xlsx
+# Internal Channel Wise documents kept locally (e.g. outreach standards)
+channelwise-*.pdf
+channelwise-*.playbook.md
 
 # Python
 __pycache__/

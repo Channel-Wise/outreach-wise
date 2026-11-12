@@ -46,6 +46,7 @@ def test_every_page_renders(client, conn, cfg, google, account):
         "/activity?kind=dry_run",
         "/suppressions",
         "/settings",
+        "/queue",
         "/templates",
     ]:
         response = client.get(path)
@@ -110,3 +111,10 @@ def test_pause_all_sending(client, conn):
     token = login(client)
     client.post("/settings/pause", data={"csrf": token})
     assert db.get_settings(conn)["sending_paused"] is True
+
+
+def test_queue_page_shows_estimates_for_live_campaigns(client, conn, account):
+    make_campaign(conn, live=True, leads=2)
+    login(client)
+    page = client.get("/queue").data.decode()
+    assert "lead1@leads.io" in page and "≈" in page and "/ 40 today" in page

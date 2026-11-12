@@ -103,7 +103,8 @@
   </div>
 
   <div class="card">
-    <div class="card-head"><div><h2>Latest replies</h2><p>Sequences stop automatically on reply.</p></div></div>
+    <div class="card-head"><div><h2>Latest replies</h2><p>Sequences stop automatically on reply.</p></div>
+      <form method="post" action="{{ url_for('check_inbox_now') }}" class="inline">{{ csrf() }}<input type="hidden" name="next" value="/"><button class="btn sm">{{ icon("sync") }}Check inbox now</button></form></div>
     {% if replies %}
     <ul class="list">
       {% for r in replies %}

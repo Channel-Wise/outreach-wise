@@ -34,6 +34,16 @@ def test_our_own_footer_in_quoted_text_is_not_an_unsubscribe():
     assert inbox.classify(msg(snippet=snippet)) == "reply"
 
 
+def test_quoted_footer_is_ignored_in_any_language():
+    turkish = (
+        "ilgileniyorum, konuşalım Orhun from Channel Wise &lt;me@sender.io&gt;, 12 Kas 2026 Per, 15:20 "
+        'tarihinde şunu yazdı: Hi Eren, ... Just reply "unsubscribe"'
+    )
+    assert inbox.classify(msg(snippet=turkish), "me@sender.io") == "reply"
+    real = "unsubscribe Orhun from Channel Wise &lt;me@sender.io&gt;, 12 Kas 2026 Per, 15:20 tarihinde şunu yazdı:"
+    assert inbox.classify(msg(snippet=real), "me@sender.io") == "unsubscribe"
+
+
 # --- polling ----------------------------------------------------------------------------------
 
 
@@ -98,7 +108,34 @@ def test_parse_rows_normalizes_and_deduplicates():
         "first_name": "Jane",
         "channel_url": "https://youtube.com/@jane",
     }
-    assert stats == {"rows": 4, "invalid": 1, "duplicates": 1}
+    assert stats == {"rows": 4, "no_email": 0, "invalid": 1, "duplicates": 1, "header": True}
+
+
+def test_sheet_without_header_row_uses_column_letters():
+    rows = [["Jane", "jane@leads.io", "Jane's Channel"], ["Sam", "SAM@leads.io"], ["Bob", "not-an-email"]]
+    leads, stats = sheets.parse_rows(rows)
+    assert stats == {"rows": 3, "no_email": 0, "invalid": 1, "duplicates": 0, "header": False}
+    assert [lead["email"] for lead in leads] == ["jane@leads.io", "sam@leads.io"]
+    assert leads[0]["fields"] == {"column_a": "Jane", "email": "jane@leads.io", "column_c": "Jane's Channel"}
+
+
+def test_sheet_without_header_row_uses_configured_names():
+    rows = [["jane@leads.io", "Jane", "Cooking"], ["sam@leads.io", "Sam", ""]]
+    leads, _ = sheets.parse_rows(rows, column_names="email, First Name, niche")
+    assert leads[0]["fields"] == {"email": "jane@leads.io", "first_name": "Jane", "niche": "Cooking"}
+    assert leads[1]["fields"] == {"email": "sam@leads.io", "first_name": "Sam"}
+
+
+def test_column_letters():
+    assert [sheets.column_letter(i) for i in (0, 1, 25, 26, 27, 51, 52)] == [
+        "a",
+        "b",
+        "z",
+        "aa",
+        "ab",
+        "az",
+        "ba",
+    ]
 
 
 def test_parse_rows_requires_an_email_column():
@@ -166,3 +203,16 @@ def test_render_variables_and_fallbacks():
 def test_ab_significance():
     assert campaigns.p_value(30, 100, 10, 100) < 0.05
     assert campaigns.p_value(11, 100, 10, 100) > 0.5
+
+
+def test_rows_without_an_email_are_skipped_quietly():
+    rows = [
+        ["jane@leads.io", "Jane"],
+        ["", "Pending"],
+        ["sam@leads.io", "Sam"],
+        ["", ""],
+        ["   ", "Also pending"],
+    ]
+    leads, stats = sheets.parse_rows(rows)
+    assert [lead["email"] for lead in leads] == ["jane@leads.io", "sam@leads.io"]
+    assert (stats["no_email"], stats["invalid"]) == (2, 0)

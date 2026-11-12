@@ -14,7 +14,10 @@
       {% if cfg.microsoft_configured %}<a class="btn" href="{{ url_for('microsoft_connect') }}">{{ icon("plus") }}Connect Microsoft 365</a>{% endif %}
     </div>
     {% if not cfg.google_configured %}
-      <div class="banner info">{{ icon("info") }}<span class="grow">Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> to connect inboxes (README → Google setup). Use this redirect URI in Google Cloud: <code>{{ redirect_uri }}</code></span></div>
+      <div class="banner info">{{ icon("info") }}<span class="grow">Set <code>GOOGLE_CLIENT_SECRETS_JSON</code> (path to your client_secret.json) or <code>GOOGLE_CLIENT_ID</code> + <code>GOOGLE_CLIENT_SECRET</code> to connect inboxes (README → Google setup). Use this redirect URI in Google Cloud: <code>{{ redirect_uri }}</code></span></div>
+    {% endif %}
+    {% if cfg.redirect_uri_mismatch %}
+      <div class="banner warn">{{ icon("alert") }}<span class="grow">Your OAuth client doesn't list <code>{{ redirect_uri }}</code> as an authorized redirect URI, so Google will refuse the connection. Add it under Google Cloud Console → Clients → your client → Authorized redirect URIs.</span></div>
     {% endif %}
     {% if accounts %}
     <div class="table-wrap"><table class="table">
@@ -57,8 +60,11 @@
       <div class="field"><label for="sheet_email_column">Email column header</label><input id="sheet_email_column" type="text" name="sheet_email_column" value="{{ settings.sheet_email_column }}"></div>
       <div class="field"><label for="sync_interval_minutes">Sync every (minutes)</label><input id="sync_interval_minutes" type="number" name="sync_interval_minutes" value="{{ settings.sync_interval_minutes }}" min="5" max="1440"></div>
     </div>
+    <div class="field"><label for="sheet_columns">Column names, if the sheet has no header row</label>
+      <input id="sheet_columns" type="text" name="sheet_columns" value="{{ settings.sheet_columns }}" placeholder="email, first_name, channel_name">
+      <div class="hint">A missing header row is detected automatically (the first row contains an email). Without names, columns become <code>{{ '{{column_b}}' }}</code>, <code>{{ '{{column_c}}' }}</code>… and the email column is found by its contents.</div></div>
     <div class="row between">
-      <span class="muted small">{% if last_sync %}Last sync {{ last_sync.at | local }} · {{ last_sync.rows }} rows, {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates, {{ last_sync.invalid }} invalid{% else %}Not synced yet{% endif %}</span>
+      <span class="muted small">{% if last_sync %}Last sync {{ last_sync.at | local }} · {{ last_sync.rows }} rows, {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates, {{ last_sync.invalid }} invalid, {{ last_sync.get('no_email', 0) }} without email{% if last_sync.header is false %} · no header row{% endif %}{% else %}Not synced yet{% endif %}</span>
       <button class="btn primary">Save</button>
     </div>
   </form>
