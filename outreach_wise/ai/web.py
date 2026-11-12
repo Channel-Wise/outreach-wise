@@ -64,25 +64,27 @@ def playbook_from_form(form) -> str:
     if form.get("mode") == "raw":
         return form.get("raw", "").replace("\r\n", "\n")
     fields = []
+    names = form.getlist("f_name")
     rows = zip(
-        form.getlist("f_name"),
+        names,
         form.getlist("f_describe"),
         form.getlist("f_max_words"),
         form.getlist("f_fallback"),
         form.getlist("f_alternatives"),
+        form.getlist("f_if_empty") or [""] * len(names),
         strict=False,
     )
-    for name, describe, max_words, fallback, alternatives in rows:
+    for name, describe, max_words, fallback, alternatives, if_empty in rows:
         name = name.strip().lower().removeprefix("ai_")
         if not name and not describe.strip():
             continue
-        fallback = fallback.strip()
+        fallback = fallback.strip() if if_empty in ("fallback", "") else ""
         fields.append(
             Field(
                 name=name,
                 describe=" ".join(describe.split()),
                 max_words=_int(max_words),
-                required=not fallback,
+                required=not fallback and if_empty != "empty",
                 fallback=fallback or None,
                 alternatives=_int(alternatives, 0) or 0,
             )
@@ -134,7 +136,12 @@ def register(app: Flask, cfg: Config) -> None:
         waiting = 0
         if db.get_settings(c)["ai_enabled"]:
             waiting = c.execute("SELECT COUNT(*) FROM ai_fields WHERE status = 'needs_review'").fetchone()[0]
-        return {"ai_waiting": waiting, "ai_campaign": ai_campaign, "ai_settings": ai_settings}
+        return {
+            "ai_waiting": waiting,
+            "ai_campaign": ai_campaign,
+            "ai_settings": ai_settings,
+            "ai_lead": ai_lead,
+        }
 
     # --- context for existing pages ---------------------------------------------------------
 
@@ -153,15 +160,41 @@ def register(app: Flask, cfg: Config) -> None:
             "paused": db.get_kv(c, "ai_paused"),
         }
 
+    def ai_lead(lead_id: int) -> list[dict]:
+        """The AI fields written for one lead, one entry per playbook, for the lead page."""
+        c = conn()
+        if not db.get_settings(c)["ai_enabled"]:
+            return []
+        out = []
+        for row in c.execute(
+            "SELECT a.*, p.name AS playbook_name FROM ai_fields a JOIN playbooks p ON p.id = a.playbook_id"
+            " WHERE a.lead_id = ? ORDER BY a.id DESC",
+            (lead_id,),
+        ):
+            playbook = playbooks.load(c, row["playbook_id"])
+            vals = json.loads(row["vals"] or "{}")
+            names = [f.name for f in playbook.fields] if playbook else list(vals)
+            key = "pending" if row["status"] == "researching" else row["status"]
+            out.append(
+                {
+                    "row": row,
+                    "status": key,
+                    "label": STATUS_LABELS.get(key, key),
+                    "vals": [(n, vals.get(n, "")) for n in names if n in vals],
+                }
+            )
+        return out
+
     def ai_campaign(campaign) -> dict:
         c = conn()
         settings = db.get_settings(c)
         playbook = playbooks.load(c, campaign["playbook_id"])
         counts = {s: 0 for s in STATUSES}
         by_lead = {}  # lead id -> (ai_fields id, status for the review tabs, why), for the leads table
+        cost = 0.0
         if campaign["playbook_id"]:
             for row in c.execute(
-                "SELECT a.id, a.lead_id, a.status, a.skip_reason, a.error FROM ai_fields a WHERE a.playbook_id = ? AND a.lead_id IN"
+                "SELECT a.id, a.lead_id, a.status, a.skip_reason, a.error, a.cost_usd FROM ai_fields a WHERE a.playbook_id = ? AND a.lead_id IN"
                 " (SELECT lead_id FROM enrollments WHERE campaign_id = ?)",
                 (campaign["playbook_id"], campaign["id"]),
             ):
@@ -169,6 +202,7 @@ def register(app: Flask, cfg: Config) -> None:
                 counts[key] = counts.get(key, 0) + 1
                 why = row["skip_reason"] if key == "skipped" else row["error"] if key == "failed" else ""
                 by_lead[row["lead_id"]] = (row["id"], key, why or "")
+                cost += row["cost_usd"] or 0
         return {
             "enabled": settings["ai_enabled"],
             "playbooks": [p for p in playbooks.all_playbooks(c) if p["parsed"]],
@@ -177,6 +211,8 @@ def register(app: Flask, cfg: Config) -> None:
             "counts": counts,
             "total": sum(counts.values()),
             "by_lead": by_lead,
+            "cost": cost,
+            "provider": settings["ai_provider"],
             "labels": STATUS_LABELS,
         }
 
@@ -482,7 +518,7 @@ def register(app: Flask, cfg: Config) -> None:
             "body": body,
             "subject_template": variant["subject"],
             "body_template": variant["body"],
-            "checks": checks.email_checks(playbook, subject, body),
+            "checks": checks.email_checks(playbook, subject, body, first=step["position"] == 1),
         }
 
     def already_sent(c, row, vals: dict) -> list[dict]:
@@ -551,6 +587,7 @@ def register(app: Flask, cfg: Config) -> None:
             )
             selected = {
                 "row": current,
+                "usage": json.loads(current["usage"] or "{}"),
                 "playbook": playbook,
                 "vals": vals,
                 "alternatives": json.loads(current["alternatives"] or "{}"),
@@ -562,6 +599,14 @@ def register(app: Flask, cfg: Config) -> None:
                 "stale": stale,
                 "position": next((n for n, i in enumerate(items, 1) if i["id"] == current["id"]), None),
             }
+        cost_sql, cost_args = "SELECT COALESCE(SUM(a.cost_usd), 0) FROM ai_fields a", []
+        if campaign_id:
+            cost_sql += (
+                " WHERE a.playbook_id = (SELECT playbook_id FROM campaigns WHERE id = ?)"
+                " AND a.lead_id IN (SELECT lead_id FROM enrollments WHERE campaign_id = ?)"
+            )
+            cost_args = [campaign_id, campaign_id]
+        total_cost = c.execute(cost_sql, cost_args).fetchone()[0]
         clean = sum(
             1
             for i in items
@@ -579,6 +624,7 @@ def register(app: Flask, cfg: Config) -> None:
                 "SELECT id, name FROM campaigns WHERE playbook_id IS NOT NULL ORDER BY id DESC"
             ).fetchall(),
             clean=clean,
+            total_cost=total_cost,
         )
 
     def review_redirect(after_id: int | None = None):

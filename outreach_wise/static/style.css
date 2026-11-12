@@ -677,6 +677,8 @@ button.node:hover { border-color: var(--accent); }
 .field-rows { display: flex; flex-direction: column; gap: 10px; }
 .field-row { display: grid; grid-template-columns: 150px minmax(0, 1fr) 90px 150px 80px 34px; gap: 8px; align-items: start; }
 .field-row.head { font-size: 12px; color: var(--muted); font-weight: 600; }
+.field-row .if-empty { display: flex; flex-direction: column; gap: 6px; }
+.field-row .if-empty select:not(:has(option[value="fallback"]:checked)) + input { display: none; }
 .field-row textarea { min-height: 38px; height: 38px; font: inherit; }
 @media (max-width: 900px) { .field-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .field-row.head { display: none; } .field-row textarea { grid-column: 1 / -1; } }
 .out { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 10px 12px; background: var(--surface-2); font-size: 13.5px; }
@@ -716,6 +718,12 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .ai-legend a:hover { color: var(--text); text-decoration: underline; }
 .ai-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
 .ext svg, .btn svg, .subhead svg { width: 14px; height: 14px; vertical-align: -2px; }
+.cost-big { font-size: 22px; font-weight: 600; margin: 0; }
+.table.compact td { padding: 5px 0; font-size: 12.5px; border: 0; vertical-align: top; }
+.table.compact td:first-child { width: 84px; }
+.ai-lead + .ai-lead { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ai-lead .table { margin: 8px 0 6px; }
+.ai-lead .meta { color: var(--muted); font-size: 12.5px; margin: 0; }
 
 /* Settings → Inboxes: add an SMTP/IMAP inbox (templates/_smtp_inbox.html) */
 .smtp-add { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
@@ -731,3 +739,26 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .route { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; font-weight: 550; color: var(--text-2); padding: 1px 8px 1px 6px; border-radius: 99px; border: 1px solid var(--border); background: var(--surface-2); }
 .route i { width: 8px; height: 8px; border-radius: 50%; background: var(--v, var(--muted)); }
 .route:not([class*="v-"]) i { display: none; }
+
+/* Leads list: bulk delete */
+.bulk-bar { display: flex; align-items: center; gap: 8px; padding: 10px 16px; border-bottom: 1px solid var(--border); }
+
+/* Emails page: sent log and filters */
+.email-filters { display: flex; align-items: center; gap: 8px; margin: 0 0 14px; flex-wrap: wrap; }
+.email-filters select { width: auto; min-width: 150px; }
+.email-filters input[type=search] { max-width: 100%; }
+.email-log .email-cell { max-width: 460px; }
+.email-log details summary { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.email-log details[open] summary { white-space: normal; font-weight: 600; }
+.email-log .quote.bounce strong { color: var(--bad); }
+.email-log .mail-body { margin: 8px 0 4px; padding: 10px 12px; background: var(--surface-2); border-radius: 8px; white-space: pre-wrap; font-size: 13px; }
+
+/* Lead lists: add-a-lead rows and list chips */
+.kv-rows { display: flex; flex-direction: column; gap: 8px; }
+.kv-row { display: grid; grid-template-columns: minmax(0, 0.8fr) minmax(0, 1.2fr); gap: 8px; }
+.kv-row input[name="field_name"] { font-family: var(--mono); font-size: 12.5px; color: var(--text-2); }
+.list-chips { display: flex; gap: 4px; flex-wrap: wrap; }
+.list-chips .badge { text-decoration: none; }
+.picker-list { gap: 8px; margin-bottom: 12px; }
+.picker-list label { font-size: 13px; color: var(--text-2); font-weight: 600; }
+.picker-list select { width: auto; min-width: 220px; }

@@ -288,6 +288,9 @@ def test_checks_flag_problems():
     assert any(not c["ok"] and "120K" in c["text"] for c in found)
     email = checks.email_checks(pb, "Hi", "Go to example.com and www.other.io now")
     assert any(not c["ok"] and "2 links" in c["text"] for c in email)
+    assert any(c["text"].startswith("Email ") for c in email)
+    follow_up = checks.email_checks(pb, "", "One short follow-up line.", first=False)
+    assert not any(c["text"].startswith("Email ") for c in follow_up)  # length is for the first email
 
 
 # --- sources and providers ------------------------------------------------------------------
@@ -467,6 +470,15 @@ def test_ai_pages_render(client, conn, ai_on, playbook_id):
     assert "{{ai_hook}}" in page and "Test creators" in page
 
 
+def test_queue_hides_leads_the_ai_skipped(conn, cfg, ai_on, playbook_id):
+    ai_campaign(conn, playbook_id, leads=2)
+    scheduler.plan(conn, ai_on)
+    conn.execute("UPDATE ai_fields SET status = 'skipped' WHERE id = (SELECT MIN(id) FROM ai_fields)")
+    skipped = conn.execute("SELECT lead_id FROM ai_fields WHERE status = 'skipped'").fetchone()[0]
+    rows = sender.upcoming(conn, db.now(), db.get_settings(conn))["rows"]
+    assert len(rows) == 1 and rows[0]["lead_id"] != skipped
+
+
 def test_campaign_page_leads_to_review(client, conn, cfg, ai_on, playbook_id):
     campaign_id = ai_campaign(conn, playbook_id, leads=2)
     scheduler.plan(conn, ai_on)
@@ -481,6 +493,24 @@ def test_campaign_page_leads_to_review(client, conn, cfg, ai_on, playbook_id):
     assert f"/review?campaign={campaign_id}&amp;status=needs_review&amp;id={ai_id}" in page  # per-lead link
     review = client.get(f"/review?campaign={campaign_id}&id={ai_id}").get_data(as_text=True)
     assert f'href="/campaigns/{campaign_id}"' in review  # back to the campaign
+
+
+def test_cost_and_fields_are_visible(client, conn, cfg, ai_on, playbook_id):
+    campaign_id = ai_campaign(conn, playbook_id, leads=1)
+    scheduler.plan(conn, ai_on)
+    scheduler.run(conn, cfg, ai_on, provider=FakeProvider())
+    row = conn.execute("SELECT id, lead_id FROM ai_fields").fetchone()
+    conn.execute("UPDATE ai_fields SET cost_usd = 0.25, model = 'claude-opus-5-5', provider = 'claude_code'")
+    conn.commit()
+
+    review = client.get(f"/review?campaign={campaign_id}&id={row['id']}").get_data(as_text=True)
+    assert "≈ $0.250" in review and "Claude Code reports" in review
+    assert "≈ $0.25 spent on AI fields for this campaign" in review
+    assert "≈ $0.25 so far" in client.get(f"/campaigns/{campaign_id}").get_data(as_text=True)
+
+    lead = client.get(f"/leads/{row['lead_id']}").get_data(as_text=True)
+    assert 'id="ai-fields"' in lead and "ai_hook" in lead and "Your Tezgah series stood out." in lead
+    assert f"id={row['id']}" in lead  # opens the lead in review
 
 
 def test_editor_form_saves_a_valid_playbook(client, conn, ai_on):
@@ -500,6 +530,21 @@ def test_editor_form_saves_a_valid_playbook(client, conn, ai_on):
     assert [f.name for f in saved.fields] == ["hook", "subject"]
     assert saved.checks.banned == ["synergy", "leverage"] and saved.checks.email_words == (50, 120)
     assert saved.get_field("subject").alternatives == 3
+
+    # "Leave it empty" survives a save; it used to turn into "skip the lead"
+    data.update(
+        playbook_id=str(conn.execute("SELECT id FROM playbooks WHERE name = 'Podcasts'").fetchone()[0]),
+        f_if_empty=["empty", "fallback"], f_fallback=["", "Hello"],
+    )  # fmt: skip
+    assert client.post("/playbooks/save", data=data).status_code == 302
+    saved = playbooks.parse(
+        conn.execute("SELECT source FROM playbooks WHERE name = 'Podcasts'").fetchone()[0]
+    )
+    hook, subject = saved.fields
+    assert not hook.required and hook.fallback is None
+    assert subject.fallback == "Hello"
+    page = client.get(f"/playbooks/{data['playbook_id']}").get_data(as_text=True)
+    assert '<option value="empty" selected>' in page
 
 
 def test_review_approve_records_edits_and_releases_the_email(

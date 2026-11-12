@@ -46,7 +46,9 @@ def test_every_page_renders(client, conn, cfg, google, account):
         "/activity?kind=dry_run",
         "/suppressions",
         "/settings",
-        "/queue",
+        "/emails",
+        "/emails?view=queue",
+        "/emails?mode=all&status=failed&q=x",
         "/templates",
     ]:
         response = client.get(path)
@@ -107,6 +109,33 @@ def test_public_unsubscribe_page(client, conn, cfg):
     assert client.get("/u/forged-token").status_code == 404
 
 
+def test_delete_leads(client, conn, cfg, google, account):
+    make_campaign(conn, live=True, leads=3)
+    sender.run_send_cycle(conn, cfg, google)  # one real email (lead 1), then the pacing gap
+    sent = {
+        r[0] for r in conn.execute("SELECT lead_id FROM messages WHERE mode = 'live' AND status = 'sent'")
+    }
+    assert sent
+    token = login(client)
+    page = client.get("/leads").get_data(as_text=True)
+    assert 'name="lead_id" value="1"' in page and "Select leads to add them to a list or delete them." in page
+    assert 'action="/leads/delete"' in client.get("/leads/2").get_data(as_text=True)
+
+    response = client.post(
+        "/leads/delete", data={"csrf": token, "lead_id": ["1", "2", "3"], "next": "/leads?q=x"}
+    )
+    assert response.status_code == 302 and response.headers["Location"].endswith("/leads?q=x")
+    left = {r[0] for r in conn.execute("SELECT id FROM leads")}
+    assert left == sent  # leads that got a real email are kept
+    assert (
+        conn.execute(
+            "SELECT COUNT(*) FROM enrollments WHERE lead_id NOT IN (SELECT id FROM leads)"
+        ).fetchone()[0]
+        == 0
+    )
+    assert "already got a real email" in client.get("/leads").get_data(as_text=True)
+
+
 def test_pause_all_sending(client, conn):
     token = login(client)
     client.post("/settings/pause", data={"csrf": token})
@@ -116,5 +145,33 @@ def test_pause_all_sending(client, conn):
 def test_queue_page_shows_estimates_for_live_campaigns(client, conn, account):
     make_campaign(conn, live=True, leads=2)
     login(client)
-    page = client.get("/queue").data.decode()
+    assert client.get("/queue").headers["Location"].endswith("/emails?view=queue")  # old link
+    page = client.get("/emails?view=queue").data.decode()
     assert "lead1@leads.io" in page and "≈" in page and "/ 40 today" in page
+
+
+def test_emails_page_lists_sent_emails(client, conn, cfg, google, account):
+    make_campaign(conn, live=True, leads=2)
+    sender.run_send_cycle(conn, cfg, google)
+    conn.execute("UPDATE messages SET replied_at = created_at")
+    message = conn.execute("SELECT * FROM messages").fetchone()
+    conn.execute(
+        "INSERT INTO inbound (gmail_id, kind, snippet, lead_id, enrollment_id, received_at)"
+        " VALUES ('r1', 'reply', 'Sounds good, call me', ?, ?, ?)",
+        (message["lead_id"], message["enrollment_id"], message["created_at"]),
+    )
+    conn.commit()
+    login(client)
+    page = client.get("/emails").data.decode()
+    assert message["to_email"] in page and "Hello Name1!" in page  # the body opens in place
+    assert "Sounds good, call me" in page and 'href="/emails?view=queue"' in page
+    assert message["to_email"] not in client.get("/emails?mode=dry_run").data.decode()
+    assert message["to_email"] not in client.get("/emails?q=nothing-matches").data.decode()
+    assert message["to_email"] in client.get("/emails?status=replied&campaign=1").data.decode()
+
+    conn.execute("UPDATE messages SET bounced_at = created_at, replied_at = NULL")
+    conn.execute("UPDATE inbound SET kind = 'bounce', snippet = 'Address not found'")
+    conn.commit()
+    page = client.get("/emails?status=bounced").data.decode()
+    assert message["to_email"] in page and "Address not found" in page and ">bounced<" in page
+    assert message["to_email"] not in client.get("/emails?status=sent").data.decode()  # delivered only

@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
 
-from . import campaigns, db, inbox, library, sender, sheets
+from . import campaigns, db, inbox, library, lists, sender, sheets
 from .config import Config
 from .google import SCOPES, Google, GoogleError
 from .security import encrypt, password_matches, read_unsubscribe_token
@@ -229,13 +229,73 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             last_sync=db.get_kv(c, "last_sync"),
         )
 
-    # --- send queue ---------------------------------------------------------------------------
+    # --- emails: everything sent, and the queue of what's next -------------------------------
 
     @app.get("/queue")
     def queue():
+        return redirect(url_for("emails", view="queue"))
+
+    @app.get("/emails")
+    def emails():
         c = conn()
         settings = db.get_settings(c)
-        return render_template("queue.html", q=sender.upcoming(c, db.now(), settings))
+        view = request.args.get("view", "sent")
+        q = sender.upcoming(c, db.now(), settings)
+        campaign_list = c.execute("SELECT id, name FROM campaigns ORDER BY id DESC").fetchall()
+        sent_total = c.execute("SELECT COUNT(*) FROM messages WHERE mode = 'live'").fetchone()[0]
+        if view == "queue":
+            return render_template(
+                "emails.html", view=view, q=q, campaign_list=campaign_list, sent_total=sent_total
+            )
+
+        filters = {k: request.args.get(k, "").strip() for k in ("campaign", "mode", "status", "q")}
+        if filters["mode"] not in ("live", "dry_run", "all"):
+            filters["mode"] = "live"
+        where, params = [], []
+        if filters["mode"] != "all":
+            where.append("m.mode = ?")
+            params.append(filters["mode"])
+        if filters["campaign"].isdigit():
+            where.append("m.campaign_id = ?")
+            params.append(int(filters["campaign"]))
+        if filters["status"] == "replied":
+            where.append("m.replied_at IS NOT NULL")
+        elif filters["status"] == "bounced":
+            where.append("m.bounced_at IS NOT NULL")
+        elif filters["status"] == "sent":
+            where.append("m.status = 'sent' AND m.bounced_at IS NULL")
+        elif filters["status"] in ("failed", "dry_run"):
+            where.append("m.status = ?")
+            params.append(filters["status"])
+        if filters["q"]:
+            where.append("(m.to_email LIKE ? OR m.subject LIKE ? OR m.body LIKE ?)")
+            params += [f"%{filters['q']}%"] * 3
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        total = c.execute(f"SELECT COUNT(*) FROM messages m {clause}", params).fetchone()[0]
+        rows = c.execute(
+            "SELECT m.*, s.position, v.label, ca.name AS campaign_name, a.email AS account_email,"
+            " (SELECT i.snippet FROM inbound i WHERE i.enrollment_id = m.enrollment_id AND i.kind = 'reply'"
+            "  ORDER BY i.received_at DESC LIMIT 1) AS reply_snippet,"
+            " (SELECT i.snippet FROM inbound i WHERE i.enrollment_id = m.enrollment_id AND i.kind = 'bounce'"
+            "  ORDER BY i.received_at DESC LIMIT 1) AS bounce_snippet"
+            " FROM messages m JOIN steps s ON s.id = m.step_id JOIN variants v ON v.id = m.variant_id"
+            " JOIN campaigns ca ON ca.id = m.campaign_id LEFT JOIN accounts a ON a.id = m.account_id"
+            f" {clause} ORDER BY COALESCE(m.sent_at, m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?",
+            [*params, PAGE_SIZE, (page - 1) * PAGE_SIZE],
+        ).fetchall()
+        return render_template(
+            "emails.html",
+            view="sent",
+            q=q,
+            rows=rows,
+            total=total,
+            filters=filters,
+            page=page,
+            pages=max(1, -(-total // PAGE_SIZE)),
+            campaign_list=campaign_list,
+            sent_total=sent_total,
+        )
 
     @app.post("/inbox/check")
     def check_inbox_now():
@@ -252,8 +312,12 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         c = conn()
         q = request.args.get("q", "").strip()
         status = request.args.get("status", "")
+        list_id = _optional_id(request.args.get("list"))
         page = max(int(request.args.get("page", 1) or 1), 1)
         where, params = [], []
+        if list_id:
+            where.append("id IN (SELECT lead_id FROM lead_list_members WHERE list_id = ?)")
+            params.append(list_id)
         if q:
             where.append("(email LIKE ? OR fields LIKE ?)")
             params += [f"%{q}%", f"%{q}%"]
@@ -271,9 +335,23 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             for key in json.loads(row["fields"]):
                 if key not in columns and "email" not in key and len(columns) < 4:
                     columns.append(key)
-        counts = dict(c.execute("SELECT status, COUNT(*) FROM leads GROUP BY status").fetchall())
+        member_sql = (
+            " WHERE id IN (SELECT lead_id FROM lead_list_members WHERE list_id = ?)" if list_id else ""
+        )
+        counts = dict(
+            c.execute(
+                f"SELECT status, COUNT(*) FROM leads{member_sql} GROUP BY status",
+                (list_id,) if list_id else (),
+            ).fetchall()
+        )
+        all_lists = lists.all_lists(c)
         return render_template(
             "leads.html",
+            list_id=list_id,
+            all_lists=all_lists,
+            list_names={r["id"]: r["name"] for r in all_lists},
+            memberships=lists.lists_of(c, {r["id"] for r in rows}),
+            has_sheet=any(r["sheet_url"] for r in all_lists),
             rows=rows,
             columns=columns,
             total=total,
@@ -294,6 +372,11 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             "lead.html",
             lead=row,
             suppressed=db.is_suppressed(c, row["email"]),
+            in_lists=c.execute(
+                "SELECT ll.id, ll.name FROM lead_lists ll JOIN lead_list_members m ON m.list_id = ll.id"
+                " WHERE m.lead_id = ? ORDER BY ll.name",
+                (lead_id,),
+            ).fetchall(),
             enrollments=c.execute(
                 "SELECT e.*, c.name AS campaign_name, c.mode FROM enrollments e"
                 " JOIN campaigns c ON c.id = e.campaign_id WHERE e.lead_id = ? ORDER BY e.id DESC",
@@ -322,6 +405,23 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         c.commit()
         flash(f"{row['email']} will never be emailed.", "success")
         return redirect(url_for("lead", lead_id=lead_id))
+
+    @app.post("/leads/delete")
+    def delete_leads():
+        c = conn()
+        ids = sorted({int(v) for v in request.form.getlist("lead_id") if v.isdigit()})
+        deleted, kept = delete_lead_rows(c, ids)
+        c.commit()
+        if deleted:
+            flash(f"Deleted {deleted} lead{'s' if deleted != 1 else ''}.", "success")
+        if kept:
+            flash(
+                f"Kept {len(kept)} lead{'s' if len(kept) != 1 else ''} that already got a real email"
+                f" ({', '.join(kept[:3])}{'…' if len(kept) > 3 else ''}). Suppress them instead.",
+                "error",
+            )
+        back = request.form.get("next", "")
+        return redirect(back if back.startswith("/leads") else url_for("leads"))
 
     @app.post("/leads/sync")
     def sync_leads():
@@ -387,7 +487,8 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             report=_campaign_report(c, row, tz()),
             templates=library.all_templates(c),
             template_categories=library.CATEGORIES,
-            picker=_lead_picker(c, campaign_id),
+            picker=_lead_picker(c, campaign_id, row["list_id"]),
+            all_lists=lists.all_lists(c),
             enrolled=c.execute(
                 "SELECT e.status, e.next_step, e.next_send_at, e.stop_reason, l.id, l.email, l.fields"
                 " FROM enrollments e JOIN leads l ON l.id = e.lead_id WHERE e.campaign_id = ?"
@@ -420,9 +521,13 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             except ValueError:
                 flash("Invalid start date.", "error")
                 return redirect(url_for("campaign", campaign_id=campaign_id))
+        list_id = _optional_id(request.form.get("list_id"))
+        if list_id and not lists.get(c, list_id):
+            list_id = None
         c.execute(
-            "UPDATE campaigns SET name = COALESCE(NULLIF(?, ''), name), auto_enroll = ?, start_at = ? WHERE id = ?",
-            (name, int(request.form.get("auto_enroll") == "on"), start_at, campaign_id),
+            "UPDATE campaigns SET name = COALESCE(NULLIF(?, ''), name), auto_enroll = ?, start_at = ?, list_id = ?"
+            " WHERE id = ?",
+            (name, int(request.form.get("auto_enroll") == "on"), start_at, list_id, campaign_id),
         )
         c.commit()
         flash("Campaign settings saved.", "success")
@@ -452,6 +557,7 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         limit = request.form.get("limit", "").strip()
         limit_n = int(limit) if limit.isdigit() and int(limit) > 0 else None
         include_contacted = request.form.get("include_contacted") == "on"
+        list_id = _optional_id(request.form.get("list_id"))
         if how == "pick":
             ids = [int(i) for i in request.form.get("lead_ids", "").split(",") if i.strip().isdigit()]
             if not ids:
@@ -461,7 +567,12 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             count = campaigns.enroll(c, campaign_id, include_contacted=True, lead_ids=ids)
         else:
             count = campaigns.enroll(
-                c, campaign_id, limit_n, include_contacted=include_contacted, shuffle=how == "random"
+                c,
+                campaign_id,
+                limit_n,
+                include_contacted=include_contacted,
+                shuffle=how == "random",
+                list_id=list_id,
             )
         c.commit()
         flash(f"Enrolled {count} leads.", "success" if count else "info")
@@ -799,16 +910,8 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         section = form.get("section")
         updates: dict = {}
         try:
-            if section == "sheet":
-                updates = {
-                    "sheet_url": form.get("sheet_url", "").strip(),
-                    "sheet_tab": form.get("sheet_tab", "").strip() or "Sheet1",
-                    "sheet_email_column": form.get("sheet_email_column", "").strip() or "email",
-                    "sheet_columns": ", ".join(
-                        n.strip() for n in form.get("sheet_columns", "").split(",") if n.strip()
-                    ),
-                    "sync_interval_minutes": _bounded(form, "sync_interval_minutes", 5, 1440),
-                }
+            if section == "sheet":  # Google Sheets are set per list now (Leads → Lists)
+                updates = {"sync_interval_minutes": _bounded(form, "sync_interval_minutes", 5, 1440)}
             elif section == "sending":
                 ZoneInfo(form.get("timezone", "UTC"))
                 start, end = form.get("window_start", ""), form.get("window_end", "")
@@ -965,11 +1068,38 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
     from .smtp_web import register as register_smtp  # SMTP/IMAP inboxes + domain health
 
     register_smtp(app, cfg)
+    from .lists_web import register as register_lists  # lead lists and their sources
+
+    register_lists(app, cfg, google)
     return app
 
 
 def _optional_id(value: str | None) -> int | None:
     return int(value) if value and value.isdigit() else None
+
+
+def delete_lead_rows(conn, lead_ids: list[int]) -> tuple[int, list[str]]:
+    """Delete leads with their enrollments, dry-run messages and AI fields. Leads that already
+    got a real email are kept (deleting them would let a re-sync email them again as new).
+    Returns (deleted count, emails kept)."""
+    deleted, kept = 0, []
+    for lead_id in lead_ids:
+        row = conn.execute("SELECT id, email FROM leads WHERE id = ?", (lead_id,)).fetchone()
+        if not row:
+            continue
+        real = conn.execute(
+            "SELECT 1 FROM messages WHERE lead_id = ? AND mode = 'live' AND status IN ('sent', 'sending')",
+            (lead_id,),
+        ).fetchone()
+        if real:
+            kept.append(row["email"])
+            continue
+        conn.execute("DELETE FROM messages WHERE lead_id = ?", (lead_id,))
+        conn.execute("DELETE FROM leads WHERE id = ?", (lead_id,))
+        deleted += 1
+    if deleted:
+        db.log_event(conn, "leads", f"Deleted {deleted} lead{'s' if deleted != 1 else ''}")
+    return deleted, kept
 
 
 def _campaign_report(conn, campaign, zone: ZoneInfo) -> dict:
@@ -1015,17 +1145,33 @@ def _campaign_report(conn, campaign, zone: ZoneInfo) -> dict:
     }
 
 
-def _lead_picker(conn, campaign_id: int) -> dict:
-    """Eligible leads for the picker: id, email, status and their sheet columns."""
+def _lead_picker(conn, campaign_id: int, list_id: int | None = None) -> dict:
+    """Eligible leads for the picker: id, email, status, sheet columns and lists; plus the lists
+    to filter by (the campaign's own list first selected)."""
     rows = campaigns.eligible_leads(conn, campaign_id, include_contacted=True)
+    memberships = lists.lists_of(conn)
     leads, columns = [], []
     for row in rows:
         fields = json.loads(row["fields"])
         for key in fields:
             if key not in columns and "email" not in key:
                 columns.append(key)
-        leads.append({"id": row["id"], "email": row["email"], "status": row["status"], "fields": fields})
-    return {"leads": leads, "columns": columns, "capped": len(rows) >= 5000}
+        leads.append(
+            {
+                "id": row["id"],
+                "email": row["email"],
+                "status": row["status"],
+                "fields": fields,
+                "lists": memberships.get(row["id"], []),
+            }
+        )
+    return {
+        "leads": leads,
+        "columns": columns,
+        "capped": len(rows) >= 5000,
+        "lists": [{"id": r["id"], "name": r["name"]} for r in lists.all_lists(conn)],
+        "list_id": list_id,
+    }
 
 
 def _template_variables(conn) -> list[str]:

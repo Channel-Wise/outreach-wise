@@ -13,6 +13,7 @@
   </form>
 </div>
 
+{% if total_cost %}<p class="muted small" style="margin:-6px 0 10px">≈ ${{ '%.2f' % total_cost }} spent on AI fields{{ " for this campaign" if campaign_id else "" }} so far.</p>{% endif %}
 <nav class="tabs" aria-label="Status">
   {% for s, label in labels.items() %}
     <a href="{{ url_for('review', status=s, campaign=campaign_id or None) }}" aria-selected="{{ 'true' if s == status else 'false' }}">{{ label }} <span class="count">{{ counts[s] }}</span></a>
@@ -108,7 +109,20 @@
       <ul class="check-list">{% for c in all_checks %}<li class="{{ '' if c.ok else 'bad' }}">{{ c.text }}</li>{% endfor %}</ul>
     </section>
     {% endif %}
-    {% if r.model %}<p class="muted small">Written by {{ r.model }} · {{ r.generated_at | local }} · ≈ ${{ '%.3f' % r.cost_usd }}</p>{% endif %}
+    {% if r.model %}
+    {% set u = selected.usage %}
+    <section class="card"><h3 class="subhead" style="margin-top:0">Cost</h3>
+      <p class="cost-big">≈ ${{ '%.3f' % (r.cost_usd or 0) }}</p>
+      <p class="muted small" style="margin:0 0 10px">for this lead, every draft included</p>
+      <table class="table compact"><tbody>
+        <tr><td class="muted">Model</td><td>{{ r.model }}</td></tr>
+        <tr><td class="muted">Via</td><td>{{ "Claude Code" if r.provider == "claude_code" else "Anthropic API" }}</td></tr>
+        {% if u %}<tr><td class="muted">Last draft</td><td>{{ "{:,}".format((u.get('input_tokens') or 0) + (u.get('cache_creation_input_tokens') or 0) + (u.get('cache_read_input_tokens') or 0)) }} tokens in · {{ "{:,}".format(u.get('output_tokens') or 0) }} out</td></tr>{% endif %}
+        <tr><td class="muted">Written</td><td>{{ r.generated_at | local }}</td></tr>
+      </tbody></table>
+      {% if r.provider == "claude_code" %}<p class="hint" style="margin-bottom:0">Claude Code reports what this would cost on the API. It runs on your Claude subscription, so it isn't billed separately, but it counts toward the monthly budget in Settings.</p>{% endif %}
+    </section>
+    {% endif %}
   </div>
   {% endif %}
 </div>

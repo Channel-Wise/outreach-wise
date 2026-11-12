@@ -6,7 +6,14 @@
   <input type="text" name="f_name" value="{{ f.name if f else '' }}" placeholder="hook" aria-label="Field name" pattern="[a-z][a-z0-9_]*">
   <textarea name="f_describe" rows="1" aria-label="What to write" placeholder="What the AI writes here">{{ f.describe if f else '' }}</textarea>
   <input type="number" name="f_max_words" value="{{ f.max_words or '' if f else '' }}" min="1" placeholder="—" aria-label="Max words">
-  <input type="text" name="f_fallback" value="{{ f.fallback or '' if f else '' }}" placeholder="Skip the lead" aria-label="If it can't be written">
+  <div class="if-empty">
+    <select name="f_if_empty" aria-label="If it can't be written">
+      <option value="skip" {{ 'selected' if not f or (f.required and f.fallback is none) }}>Skip the lead</option>
+      <option value="empty" {{ 'selected' if f and not f.required and f.fallback is none }}>Leave it empty</option>
+      <option value="fallback" {{ 'selected' if f and f.fallback is not none }}>Use this text:</option>
+    </select>
+    <input type="text" name="f_fallback" value="{{ f.fallback or '' if f else '' }}" placeholder="Fallback text" aria-label="Fallback text">
+  </div>
   <input type="number" name="f_alternatives" value="{{ f.alternatives if f else 0 }}" min="0" max="8" aria-label="Alternatives">
   <button type="button" class="btn sm ghost" data-remove-field aria-label="Remove field">{{ icon("close") }}</button>
 </div>
@@ -72,7 +79,7 @@
         <template id="field-template">{{ field_row() }}</template>
         <div class="row" style="margin-top:10px;justify-content:space-between">
           <button type="button" class="btn sm" id="add-field">{{ icon("plus") }}Add field</button>
-          <span class="hint">"If it can't be written": a fallback text (e.g. a neutral greeting), or empty to skip the lead. "Options": extra alternatives you can pick from in review.</span>
+          <span class="hint">"If it can't be written": skip the lead, leave the field empty (use <code>{{ '{{' }}ai_name|{{ '}}' }}</code> in the email), or use a fallback text such as a neutral greeting. "Options": extra alternatives you can pick from in review.</span>
         </div>
         <p class="hint" style="margin-top:10px">Always included: <strong>evidence</strong> (where each claim came from), <strong>notes for the reviewer</strong>, and a <strong>skip reason</strong> when the lead shouldn't be contacted.</p>
       </section>

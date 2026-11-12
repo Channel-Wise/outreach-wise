@@ -26,7 +26,7 @@
   <div class="card-head"><div><h2>Get started</h2><p>Everything runs in dry-run mode until you explicitly approve a campaign.</p></div></div>
   <ol class="steps-list">
     <li class="{{ 'done' if setup_done[0] }}"><strong>Connect an inbox</strong> — <a href="{{ url_for('settings_page') }}#inboxes">Settings → Inboxes</a>. Needs Google OAuth credentials (see README). Optional for dry runs.</li>
-    <li class="{{ 'done' if setup_done[1] }}"><strong>Load leads</strong> — add your Google Sheet in <a href="{{ url_for('settings_page') }}#sheet">Settings → Lead source</a>, or run <code>outreach-wise demo</code> for fake leads.</li>
+    <li class="{{ 'done' if setup_done[1] }}"><strong>Load leads</strong> — <a href="{{ url_for('lead_lists') }}">create a list</a> from a Google Sheet, a CSV or JSON file, or by hand, or run <code>outreach-wise demo</code> for fake leads.</li>
     <li class="{{ 'done' if setup_done[2] }}"><strong>Create a campaign</strong> — write the sequence, enroll leads and start it as a dry run.</li>
     <li class="{{ 'done' if setup_done[3] }}"><strong>Preview &amp; go live</strong> — review real renders, then approve live sending.</li>
   </ol>

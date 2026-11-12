@@ -78,11 +78,12 @@ def field_checks(playbook: Playbook, values: dict, known_text: str) -> list[dict
     return results
 
 
-def email_checks(playbook: Playbook, subject: str, body: str) -> list[dict]:
-    """Checks on the finished email (template + fields), shown in Review."""
+def email_checks(playbook: Playbook, subject: str, body: str, first: bool = True) -> list[dict]:
+    """Checks on the finished email (template + fields), shown in Review. The playbook's
+    email length is for the first email; follow-ups are meant to be shorter."""
     results = []
     c = playbook.checks
-    if c.email_words:
+    if c.email_words and first:
         count = words(body)
         low, high = c.email_words
         results.append(

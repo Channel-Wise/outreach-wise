@@ -195,14 +195,15 @@ def apply_outcome(
         "UPDATE enrollments SET status = ?, stop_reason = ?, updated_at = ? WHERE lead_id = ? AND status = 'active'",
         (status, kind, stamp, lead_id),
     )
-    if kind == "reply" and enrollment_id:
-        # Attribute the reply to the last email sent before it (for per-step / A/B stats).
+    if kind in ("reply", "bounce") and enrollment_id:
+        # Attribute it to the last email sent before it (per-step / A/B stats, the Emails page).
+        column = "replied_at" if kind == "reply" else "bounced_at"
         conn.execute(
-            """
-            UPDATE messages SET replied_at = ? WHERE id = (
+            f"""
+            UPDATE messages SET {column} = ? WHERE id = (
                 SELECT id FROM messages WHERE enrollment_id = ? AND mode = 'live' AND status = 'sent'
                 ORDER BY sent_at <= ? DESC, sent_at DESC, id DESC LIMIT 1
-            ) AND replied_at IS NULL
+            ) AND {column} IS NULL
             """,
             (stamp, enrollment_id, stamp),
         )

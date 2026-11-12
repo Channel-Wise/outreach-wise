@@ -6,7 +6,7 @@ import random
 import signal
 import sys
 
-from . import __version__, check_inbox, db, sheets
+from . import __version__, check_inbox, db, lists, sheets
 from .config import ConfigError, load_config, load_dotenv
 from .google import Google
 
@@ -71,7 +71,9 @@ def demo(cfg, count: int) -> None:
         )
     conn = db.connect(cfg.database_path)
     leads, _ = sheets.parse_rows(rows)
-    created, updated = sheets.upsert_leads(conn, leads)
+    row = conn.execute("SELECT id FROM lead_lists WHERE name = 'Demo leads'").fetchone()
+    list_id = row["id"] if row else lists.create(conn, "Demo leads")[0]
+    created, updated = sheets.upsert_leads(conn, leads, list_id)
     db.log_event(conn, "sync", f"Demo data: {created} fake leads added (example.com, never sent live)")
     conn.commit()
     conn.close()

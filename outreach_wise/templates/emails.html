@@ -1,0 +1,119 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, mode_badge, pager, csrf with context %}
+{% block title %}Emails{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Emails</h1>
+    <p>
+      {% if view == "queue" %}
+        {% if settings.sending_paused %}Sending is paused.
+        {% elif q.open_now %}Sending window open until {{ settings.window_end }} {{ settings.timezone }}. Emails are spread evenly across it, one inbox at a time.
+        {% else %}Outside the sending window ({{ settings.window_start }}–{{ settings.window_end }} {{ settings.timezone }}, {{ settings.send_days | days }}).{% endif %}
+      {% else %}Every email sent from every campaign. Click one to read it.{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    <form method="post" action="{{ url_for('check_inbox_now') }}" class="inline">{{ csrf() }}<input type="hidden" name="next" value="{{ request.full_path }}"><button class="btn">{{ icon("sync") }}Check inbox now</button></form>
+  </div>
+</div>
+
+<nav class="tabs" aria-label="Emails">
+  <a href="{{ url_for('emails') }}" aria-selected="{{ 'true' if view == 'sent' else 'false' }}">Sent <span class="count">{{ "{:,}".format(sent_total) }}</span></a>
+  <a href="{{ url_for('emails', view='queue') }}" aria-selected="{{ 'true' if view == 'queue' else 'false' }}">Queue <span class="count">{{ "{:,}".format(q.total) }}</span></a>
+</nav>
+
+{% if view == "sent" %}
+<form method="get" class="row email-filters">
+  <select name="campaign" aria-label="Campaign" onchange="this.form.submit()">
+    <option value="">All campaigns</option>
+    {% for c in campaign_list %}<option value="{{ c.id }}" {{ 'selected' if filters.campaign == c.id | string }}>{{ c.name }}</option>{% endfor %}
+  </select>
+  <select name="mode" aria-label="Real or dry run" onchange="this.form.submit()">
+    <option value="live" {{ 'selected' if filters.mode == 'live' }}>Real emails</option>
+    <option value="dry_run" {{ 'selected' if filters.mode == 'dry_run' }}>Dry run</option>
+    <option value="all" {{ 'selected' if filters.mode == 'all' }}>Both</option>
+  </select>
+  <select name="status" aria-label="Status" onchange="this.form.submit()">
+    <option value="">Any status</option>
+    {% for s, label in [("sent", "Delivered"), ("replied", "Replied"), ("bounced", "Bounced"), ("failed", "Failed")] %}<option value="{{ s }}" {{ 'selected' if filters.status == s }}>{{ label }}</option>{% endfor %}
+  </select>
+  <span class="spacer"></span>
+  <input type="search" name="q" value="{{ filters.q }}" placeholder="Search recipient, subject or text" aria-label="Search emails" style="width:260px">
+</form>
+
+<div class="card flush">
+  {% if rows %}
+  <div class="table-wrap"><table class="table email-log">
+    <thead><tr><th>When</th><th>To</th><th>Campaign</th><th>Step</th><th>Email</th><th>Status</th></tr></thead>
+    <tbody>
+    {% for m in rows %}
+      <tr>
+        <td class="nowrap muted">{{ (m.sent_at or m.created_at) | local }}</td>
+        <td><a href="{{ url_for('lead', lead_id=m.lead_id) }}">{{ m.to_email }}</a>{% if m.account_email %}<div class="muted small">from {{ m.account_email }}</div>{% endif %}</td>
+        <td><a href="{{ url_for('campaign', campaign_id=m.campaign_id) }}">{{ m.campaign_name }}</a></td>
+        <td class="nowrap">{{ "First email" if m.position == 1 else "Follow-up " ~ (m.position - 1) }}{% if m.label != "A" %} · {{ m.label }}{% endif %}</td>
+        <td class="email-cell">
+          <details><summary>{{ m.subject }}</summary><pre class="mail-body">{{ m.body }}</pre></details>
+          {% if m.reply_snippet %}<div class="quote small"><strong>Reply:</strong> {{ m.reply_snippet }}</div>{% endif %}
+          {% if m.bounced_at and m.bounce_snippet %}<div class="quote small bounce"><strong>Bounced:</strong> {{ m.bounce_snippet | truncate(220) }}</div>{% endif %}
+          {% if m.error %}<div class="small" style="color:var(--bad)">{{ m.error }}</div>{% endif %}
+        </td>
+        <td class="nowrap">{% if m.bounced_at %}{{ badge('bounced') }}{% else %}{{ badge(m.status, "dry run" if m.status == "dry_run" else None) }}{% endif %}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {{ pager(page, pages, 'emails') }}
+  {% else %}
+  <div class="empty">
+    <h3>{{ "No matching emails" if filters.q or filters.status or filters.campaign else ("No real emails yet" if filters.mode == "live" else "No emails yet") }}</h3>
+    <p>{% if filters.mode == "live" and not (filters.q or filters.status or filters.campaign) %}Emails from campaigns that are live show up here. <a href="{{ url_for('emails', mode='dry_run') }}">See dry-run emails</a>.{% else %}Try other filters.{% endif %}</p>
+  </div>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="stats">
+  <div class="stat"><div class="label">In queue</div><div class="value">{{ q.total }}</div><div class="sub">active sequences</div></div>
+  <div class="stat"><div class="label">Due now</div><div class="value">{{ q.due_now }}</div><div class="sub">waiting for a send slot</div></div>
+  {% for i in q.inboxes %}
+  <div class="stat">
+    <div class="label truncate" title="{{ i.email }}">{{ i.email }}</div>
+    <div class="value">{{ i.used }}<span class="muted" style="font-size:15px;font-weight:500"> / {{ i.limit }} today</span></div>
+    <div class="sub">{% if not i.enabled %}paused{% elif i.used >= i.limit %}daily limit reached{% elif q.open_now %}next send {{ i.next_slot | local("%H:%M") }} · then ~every {{ (i.gap.total_seconds() / 60) | round | int }} min{% else %}waiting for the window{% endif %}</div>
+  </div>
+  {% endfor %}
+</div>
+
+<div class="card flush">
+  {% if q.rows %}
+  <div class="table-wrap"><table class="table">
+    <thead><tr><th>#</th><th>Lead</th><th>Campaign</th><th>Next email</th><th>Inbox</th><th>Due</th><th>Estimated send</th></tr></thead>
+    <tbody>
+    {% for r in q.rows %}
+      <tr>
+        <td class="muted num">{{ loop.index }}</td>
+        <td><a href="{{ url_for('lead', lead_id=r.lead_id) }}">{{ r.email }}</a></td>
+        <td><a href="{{ url_for('campaign', campaign_id=r.campaign_id) }}">{{ r.campaign_name }}</a> {% if r.mode != 'live' %}<span class="badge accent">dry run</span>{% endif %}</td>
+        <td class="nowrap">{{ "First email" if r.next_step == 1 else "Follow-up " ~ (r.next_step - 1) }}</td>
+        <td class="small">{{ r.account_email or "next free inbox" }}</td>
+        <td class="nowrap muted">{{ "now" if r.due_now else r.due | local }}</td>
+        <td class="nowrap">
+          {% if r.mode != 'live' %}<span class="muted">not sent (dry run)</span>
+          {% elif r.eta %}≈ {{ r.eta | local("%a %H:%M") }}
+          {% elif r.due_now %}<span class="muted">next sending window</span>
+          {% else %}<span class="muted">after it's due</span>{% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table></div>
+  {% if q.total > q.rows | length %}<p class="muted small" style="padding:10px 18px;margin:0">Showing the first {{ q.rows | length }} of {{ q.total }}.</p>{% endif %}
+  {% else %}
+  <div class="empty"><h3>Queue is empty</h3><p>Enroll leads into an active campaign to see what will be sent and when.</p></div>
+  {% endif %}
+</div>
+<p class="muted small" style="margin-top:10px">Estimates assume no new leads, replies or failures and ignore the small random jitter between sends. Follow-ups are only sent if the lead hasn't replied.</p>
+{% endif %}
+{% endblock %}

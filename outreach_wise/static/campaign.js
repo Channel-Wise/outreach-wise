@@ -788,7 +788,7 @@
   const pickerRoot = $("#picker");
   if (pickerData && pickerRoot) createPicker(pickerRoot, pickerData);
 
-  function createPicker(root, { leads, columns, capped }) {
+  function createPicker(root, { leads: allLeads, columns, capped, lists = [], list_id: listId = null }) {
     const form = $("#enroll-form", root);
     const p = (name) => $(`[data-p="${name}"]`, root);
     const table = $(".picker-table table", root);
@@ -797,9 +797,34 @@
     const shown = columns.slice(0, 4);
     let how = "pick";
     let matches = [];
-    const newCount = leads.filter((l) => l.status === "new").length;
+    let leads = allLeads;
+    let newCount = 0;
 
-    leads.forEach((l) => (l.search = `${l.email} ${Object.values(l.fields).join(" ")}`.toLowerCase()));
+    allLeads.forEach((l) => (l.search = `${l.email} ${Object.values(l.fields).join(" ")}`.toLowerCase()));
+
+    // Lists: narrow everything (table, random, first N) to one list's leads.
+    const listSelect = p("list");
+    function useList(id) {
+      listId = id ? Number(id) : null;
+      form.list_id.value = listId ?? "";
+      leads = listId ? allLeads.filter((l) => (l.lists || []).includes(listId)) : allLeads;
+      newCount = leads.filter((l) => l.status === "new").length;
+    }
+    if (lists.length) {
+      const count = (id) => allLeads.filter((l) => l.status === "new" && (l.lists || []).includes(id)).length;
+      listSelect.replaceChildren(
+        el("option", { value: "", text: `All lists (${allLeads.filter((l) => l.status === "new").length} new)` }),
+        ...lists.map((l) => el("option", { value: l.id, text: `${l.name} (${count(l.id)} new)` })));
+      listSelect.value = listId ?? "";
+      p("list-row").hidden = false;
+      listSelect.addEventListener("change", () => {
+        useList(listSelect.value);
+        p("contacted").closest("label").hidden = leads.length === newCount;
+        filter();
+        draw();
+      });
+    }
+    useList(lists.some((l) => l.id === listId) ? listId : null);
 
     table.tHead.replaceChildren(el("tr", {},
       el("th", { style: "width:36px" }, el("input", { type: "checkbox", "aria-label": "Select all shown", onchange: (e) => {
@@ -829,7 +854,7 @@
         return tr;
       });
       table.tBodies[0].replaceChildren(...rows);
-      if (!rows.length) table.tBodies[0].append(el("tr", {}, el("td", { colspan: shown.length + 3, class: "muted", text: leads.length ? "No leads match." : "No eligible leads. Sync your sheet on the Leads page." })));
+      if (!rows.length) table.tBodies[0].append(el("tr", {}, el("td", { colspan: shown.length + 3, class: "muted", text: leads.length ? "No leads match." : listId ? "No eligible leads in this list." : "No eligible leads. Add some on the Leads page." })));
       const allBox = $("thead input", table);
       const visible = matches.slice(0, MAX_ROWS);
       allBox.checked = visible.length > 0 && visible.every((l) => chosen.has(l.id));
@@ -840,13 +865,14 @@
     function summary() {
       let text, n;
       if (how === "pick") {
-        n = chosen.size;
+        n = leads.filter((l) => chosen.has(l.id)).length;
         text = n ? `${n} lead${n === 1 ? "" : "s"} selected` : "Select leads in the table";
       } else {
         const input = $(`[data-how-panel="${how}"] [data-p="n"]`, root);
         const pool = form.include_contacted.checked ? leads.length : newCount;
         n = Math.min(parseInt(input.value || "0", 10) || (how === "first" ? pool : 0), pool);
-        text = how === "random" ? (n ? `${n} random lead${n === 1 ? "" : "s"} out of ${pool}` : "Enter how many") : `${n} of ${pool} leads, top of the sheet first`;
+        const from = listId ? ` in ${lists.find((l) => l.id === listId)?.name}` : "";
+        text = how === "random" ? (n ? `${n} random lead${n === 1 ? "" : "s"} out of ${pool}${from}` : "Enter how many") : `${n} of ${pool} leads${from}, top of the sheet first`;
       }
       p("summary").textContent = text;
       p("submit").textContent = n ? `Enroll ${n} lead${n === 1 ? "" : "s"}` : "Enroll leads";
@@ -870,7 +896,8 @@
     p("none").addEventListener("click", () => { chosen.clear(); draw(); });
     form.addEventListener("submit", (e) => {
       if (how === "pick") {
-        form.lead_ids.value = [...chosen].join(",");
+        const inList = new Set(leads.map((l) => l.id));
+        form.lead_ids.value = [...chosen].filter((id) => inList.has(id)).join(",");
       } else {
         const input = $(`[data-how-panel="${how}"] [data-p="n"]`, root);
         let limit = form.querySelector('input[name="limit"]');

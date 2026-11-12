@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, csrf with context %}
+{% block title %}Lists{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('leads') }}">← Leads</a></p>
+    <h1>Lists</h1>
+    <p>Group leads by audience, like "Finance creators (EN)" or "Türk kanallar", and pick a list when you add leads to a campaign. A lead can be in several lists.</p>
+  </div>
+</div>
+
+<div class="cols">
+  <div class="card flush">
+    {% if rows %}
+    <div class="table-wrap"><table class="table">
+      <thead><tr><th>List</th><th>Source</th><th class="num">Leads</th><th class="num">Never contacted</th><th>Last import</th></tr></thead>
+      <tbody>
+      {% for l in rows %}{% set last = l.last_sync | fields if l.last_sync else none %}
+        <tr>
+          <td><a href="{{ url_for('lead_list', list_id=l.id) }}"><strong>{{ l.name }}</strong></a></td>
+          <td class="small">{% if l.sheet_url %}Google Sheet · {{ l.sheet_tab }}{% else %}<span class="muted">Files and leads added by hand</span>{% endif %}</td>
+          <td class="num"><a href="{{ url_for('leads', list=l.id) }}">{{ "{:,}".format(l.total) }}</a></td>
+          <td class="num">{{ "{:,}".format(l.fresh) }}</td>
+          <td class="small muted nowrap">{% if last %}{{ last.at | local }}{% if last.error %} · <span style="color:var(--bad)">failed</span>{% endif %}{% else %}—{% endif %}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <div class="empty"><h3>No lists yet</h3><p>Create one on the right.</p></div>
+    {% endif %}
+  </div>
+
+  <form class="card" method="post" action="{{ url_for('lead_list_create') }}" id="new-list">{{ csrf() }}
+    <div class="card-head"><div><h2>New list</h2><p>Leads come from a Google Sheet that keeps syncing, or from files and the add-a-lead form on the list's page.</p></div></div>
+    <div class="field"><label for="name">Name</label><input id="name" type="text" name="name" maxlength="80" required placeholder="e.g. Türk kanallar"></div>
+    <div class="field"><span class="label">Source</span>
+      <label class="check"><input type="radio" name="source" value="manual" checked data-source> Files (CSV, JSON) and leads added by hand</label>
+      <label class="check"><input type="radio" name="source" value="sheet" data-source> A Google Sheet tab, synced every {{ settings.sync_interval_minutes }} minutes</label>
+    </div>
+    <div data-sheet-fields hidden>
+      <div class="field"><label for="sheet_url">Sheet URL or ID</label><input id="sheet_url" type="text" name="sheet_url" placeholder="https://docs.google.com/spreadsheets/d/…"><div class="hint">Read with the first connected Google inbox, which needs access to the sheet.</div></div>
+      <div class="fields-2">
+        <div class="field"><label for="sheet_tab">Tab name</label><input id="sheet_tab" type="text" name="sheet_tab" value="Sheet1"></div>
+        <div class="field"><label for="sheet_email_column">Email column header</label><input id="sheet_email_column" type="text" name="sheet_email_column" value="email"></div>
+      </div>
+      <div class="field"><label for="sheet_columns">Column names, if the sheet has no header row</label><input id="sheet_columns" type="text" name="sheet_columns" placeholder="email, first_name, channel_url"></div>
+    </div>
+    <div class="row" style="justify-content:flex-end"><button class="btn primary">Create list</button></div>
+  </form>
+</div>
+{% endblock %}
+{% block scripts %}<script>
+document.querySelectorAll("[data-source]").forEach((r) => r.addEventListener("change", () => {
+  document.querySelector("[data-sheet-fields]").hidden = document.querySelector("[data-source]:checked").value !== "sheet";
+}));
+</script>{% endblock %}

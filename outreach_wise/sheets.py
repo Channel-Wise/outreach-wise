@@ -8,9 +8,9 @@ import json
 import re
 import sqlite3
 
-from . import campaigns, db
+from . import campaigns, db, lists
 from .config import Config
-from .google import Google
+from .google import Google, GoogleError
 from .security import decrypt
 
 EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[a-z0-9-]{2,}$")
@@ -113,51 +113,85 @@ def parse_rows(
     return leads, stats
 
 
-def upsert_leads(conn: sqlite3.Connection, leads: list[dict]) -> tuple[int, int]:
-    """Insert new leads and refresh data of existing ones. Returns (created, updated)."""
-    existing = {row["email"]: row["fields"] for row in conn.execute("SELECT email, fields FROM leads")}
-    stamp = db.iso(db.now())
-    new_rows, changed_rows = [], []
-    for lead in leads:
-        fields = json.dumps(lead["fields"], ensure_ascii=False, sort_keys=True)
-        if lead["email"] not in existing:
-            new_rows.append((lead["email"], fields, stamp, stamp))
-        elif existing[lead["email"]] != fields:
-            changed_rows.append((fields, stamp, lead["email"]))
-    conn.executemany(
-        "INSERT INTO leads (email, fields, status, created_at, updated_at) VALUES (?, ?, 'new', ?, ?)",
-        new_rows,
+def upsert_leads(conn: sqlite3.Connection, leads: list[dict], list_id: int | None = None) -> tuple[int, int]:
+    """Insert new leads and merge new data into existing ones. Returns (created, updated)."""
+    return lists.upsert(conn, leads, list_id)
+
+
+def import_rows(
+    conn: sqlite3.Connection,
+    list_id: int,
+    rows: list[list[str]],
+    source: str,
+    email_column: str = "email",
+    column_names: str = "",
+) -> dict:
+    """Rows (header first, or none) from a sheet or a file → leads in a list. Records the run
+    on the list and in the activity log, then auto-enrolls. Returns the counters."""
+    leads, stats = parse_rows(rows, email_column or "email", column_names)
+    stats["created"], stats["updated"] = lists.upsert(conn, leads, list_id)
+    stats["enrolled"] = campaigns.auto_enroll(conn)
+    stats.update(at=db.iso(db.now()), source=source)
+    name = conn.execute("SELECT name FROM lead_lists WHERE id = ?", (list_id,)).fetchone()["name"]
+    conn.execute("UPDATE lead_lists SET last_sync = ? WHERE id = ?", (json.dumps(stats), list_id))
+    db.log_event(
+        conn,
+        "sync",
+        f"{source} → {name}: {stats['created']} new, {stats['updated']} updated, "
+        f"{stats['duplicates']} duplicate and {stats['invalid']} invalid rows skipped, "
+        f"{stats['no_email']} rows without an email"
+        + (f", {stats['enrolled']} auto-enrolled" if stats["enrolled"] else ""),
     )
-    conn.executemany("UPDATE leads SET fields = ?, updated_at = ? WHERE email = ?", changed_rows)
-    return len(new_rows), len(changed_rows)
+    return stats
 
 
-def sync(conn: sqlite3.Connection, cfg: Config, google: Google) -> dict:
-    settings = db.get_settings(conn)
-    if not settings["sheet_url"]:
-        raise SyncError("No Google Sheet configured (Settings → Lead source).")
+def sync(conn: sqlite3.Connection, cfg: Config, google: Google, list_id: int | None = None) -> dict:
+    """Sync every list that has a Google Sheet (or just `list_id`). Returns the summed counters."""
+    lists.adopt_existing(conn)
+    sql = (
+        "SELECT * FROM lead_lists WHERE sheet_url <> ''" + (" AND id = ?" if list_id else "") + " ORDER BY id"
+    )
+    sheet_lists = conn.execute(sql, (list_id,) if list_id else ()).fetchall()
+    if not sheet_lists:
+        raise SyncError("No list has a Google Sheet yet (Leads → Lists).")
     account = conn.execute(
         "SELECT * FROM accounts WHERE enabled = 1 AND transport = 'gmail_api' ORDER BY id LIMIT 1"
     ).fetchone()
     if not account:
         raise SyncError("Connect a Google account first (Settings → Inboxes).")
 
-    rows = google.sheet_values(
-        decrypt(cfg.secret_key, account["refresh_token"]),
-        spreadsheet_id(settings["sheet_url"]),
-        settings["sheet_tab"] or "Sheet1",
-    )
-    leads, stats = parse_rows(rows, settings["sheet_email_column"] or "email", settings["sheet_columns"])
-    stats["created"], stats["updated"] = upsert_leads(conn, leads)
-    stats["enrolled"] = campaigns.auto_enroll(conn)
-    db.log_event(
-        conn,
-        "sync",
-        f"Sheet sync: {stats['created']} new, {stats['updated']} updated, "
-        f"{stats['duplicates']} duplicate and {stats['invalid']} invalid rows skipped, "
-        f"{stats['no_email']} rows without an email"
-        + (f", {stats['enrolled']} auto-enrolled" if stats["enrolled"] else ""),
-    )
-    db.set_kv(conn, "last_sync", {"at": db.iso(db.now()), **stats})
+    keys = ("rows", "created", "updated", "duplicates", "invalid", "no_email", "enrolled")
+    total = dict.fromkeys(keys, 0)
+    errors = []
+    for sheet_list in sheet_lists:
+        try:
+            rows = google.sheet_values(
+                decrypt(cfg.secret_key, account["refresh_token"]),
+                spreadsheet_id(sheet_list["sheet_url"]),
+                sheet_list["sheet_tab"] or "Sheet1",
+            )
+            stats = import_rows(
+                conn,
+                sheet_list["id"],
+                rows,
+                "Sheet sync",
+                sheet_list["sheet_email_column"],
+                sheet_list["sheet_columns"],
+            )
+        except (SyncError, GoogleError, ValueError) as err:
+            errors.append(f"{sheet_list['name']}: {err}")
+            failed = {"at": db.iso(db.now()), "source": "Sheet sync", "error": str(err)}
+            conn.execute(
+                "UPDATE lead_lists SET last_sync = ? WHERE id = ?", (json.dumps(failed), sheet_list["id"])
+            )
+            continue
+        for key in keys:
+            total[key] += stats.get(key, 0)
+        total["header"] = stats["header"]
+    if errors and len(errors) == len(sheet_lists):
+        raise SyncError("; ".join(errors))
+    for message in errors:
+        db.log_event(conn, "sync", f"Sheet sync failed for {message}", level="error")
+    db.set_kv(conn, "last_sync", {"at": db.iso(db.now()), **total})
     conn.commit()
-    return stats
+    return total

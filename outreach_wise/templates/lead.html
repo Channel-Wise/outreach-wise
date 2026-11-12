@@ -13,6 +13,10 @@
     <form method="post" action="{{ url_for('suppress_lead', lead_id=lead.id) }}" class="inline" data-confirm="Never email this lead again?">{{ csrf() }}
       <button class="btn">{{ icon("suppressions") }}Suppress</button></form>
     {% endif %}
+    <form method="post" action="{{ url_for('delete_leads') }}" class="inline" data-ok="Delete"
+      data-confirm="Delete this lead? Its campaign history, dry-run emails and AI fields go with it, and this can't be undone. If it's still in your sheet, the next sync adds it back as new.">{{ csrf() }}
+      <input type="hidden" name="lead_id" value="{{ lead.id }}">
+      <button class="btn ghost danger-text">Delete</button></form>
   </div>
 </div>
 
@@ -30,7 +34,7 @@
             <td>{{ m.position }}{{ m.label }}</td>
             <td><details><summary>{{ m.subject }}</summary><pre class="mail-body" style="padding:8px 0">{{ m.body }}</pre></details>
               {% if m.error %}<div class="small" style="color:var(--bad)">{{ m.error }}</div>{% endif %}</td>
-            <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+            <td>{{ badge('bounced') if m.bounced_at else badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>
@@ -38,6 +42,24 @@
       {% else %}<div class="empty" style="padding:20px"><p>No emails yet.</p></div>{% endif %}
     </div>
 
+    {% set ai_rows = ai_lead(lead.id) if ai_lead is defined else [] %}
+    {% if ai_rows %}
+    <div class="card" id="ai-fields">
+      <div class="card-head"><h2>AI fields</h2></div>
+      {% for a in ai_rows %}{% set r = a.row %}
+      <div class="ai-lead">
+        <div class="row"><strong>{{ r.playbook_name }}</strong>{{ badge(a.status, a.label | lower) }}<span class="spacer"></span><a class="small" href="{{ url_for('review', status=a.status, id=r.id) }}">Open in review →</a></div>
+        {% if r.status == "skipped" %}<p class="muted small">Skipped: {{ r.skip_reason }}</p>{% elif r.status == "failed" %}<p class="small" style="color:var(--bad)">{{ r.error }}</p>{% endif %}
+        {% if a.vals %}
+        <table class="table"><tbody>
+          {% for name, value in a.vals %}<tr><td class="muted mono" style="width:22%">ai_{{ name }}</td><td style="word-break:break-word">{{ value or "—" }}</td></tr>{% endfor %}
+        </tbody></table>
+        {% endif %}
+        {% if r.model %}<p class="meta">{{ r.model }} via {{ "Claude Code" if r.provider == "claude_code" else "Anthropic API" }} · ≈ ${{ '%.3f' % (r.cost_usd or 0) }} · {{ r.generated_at | local }}{% if r.reviewed_at %} · reviewed {{ r.reviewed_at | local }}{% endif %}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="card">
       <div class="card-head"><h2>Inbound</h2></div>
       {% if inbound_rows %}
@@ -58,6 +80,12 @@
         {% endfor %}
       </tbody></table>
     </div>
+    {% if in_lists %}
+    <div class="card">
+      <div class="card-head"><h2>Lists</h2></div>
+      <div class="list-chips">{% for l in in_lists %}<a class="badge plain" href="{{ url_for('leads', list=l.id) }}">{{ l.name }}</a>{% endfor %}</div>
+    </div>
+    {% endif %}
     <div class="card">
       <div class="card-head"><h2>Campaigns</h2></div>
       {% if enrollments %}

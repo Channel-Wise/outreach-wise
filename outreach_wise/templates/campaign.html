@@ -35,7 +35,7 @@
 {% if ai.enabled and ai.playbook %}
 <section class="card" style="margin-bottom:16px">
   <div class="row" style="justify-content:space-between">
-    <div><h2>AI personalization</h2><p class="muted small" style="margin:2px 0 0">Playbook: {{ ai.playbook.name }} · {{ "emails wait for your approval" if campaign.require_approval else "drafts are sent without review" }}</p></div>
+    <div><h2>AI personalization</h2><p class="muted small" style="margin:2px 0 0">Playbook: {{ ai.playbook.name }} · {{ "emails wait for your approval" if campaign.require_approval else "drafts are sent without review" }}{% if ai.cost %} · ≈ ${{ '%.2f' % ai.cost }} so far{% endif %}</p></div>
     {% if ai.counts.needs_review %}<a class="btn primary sm" href="{{ url_for('review', campaign=campaign.id) }}">{{ icon("review") }}Review {{ ai.counts.needs_review }} email{{ 's' if ai.counts.needs_review != 1 }}</a>
     {% else %}<a class="small" href="{{ url_for('review', campaign=campaign.id, status='approved') }}">Open review →</a>{% endif %}
   </div>
@@ -156,6 +156,7 @@
 <section class="tab-panel" id="panel-leads">
   <div class="card" id="picker">
     <div class="card-head"><div><h2>Add leads</h2><p>{{ picker.leads | selectattr("status", "equalto", "new") | list | length }} never-contacted leads are available (not suppressed, not in another active campaign).</p></div></div>
+    <div class="row picker-list" data-p="list-row" hidden><label for="picker-list">From</label><select id="picker-list" data-p="list"></select></div>
     <div class="segmented" role="tablist" style="margin-bottom:14px">
       <button type="button" class="on" data-how="pick">Pick leads</button>
       <button type="button" data-how="random">{{ icon("shuffle") }}Random sample</button>
@@ -164,6 +165,7 @@
 
     <form method="post" action="{{ url_for('campaign_enroll', campaign_id=campaign.id) }}" id="enroll-form">{{ csrf() }}
       <input type="hidden" name="how" value="pick">
+      <input type="hidden" name="list_id" value="{{ campaign.list_id or '' }}">
       <input type="hidden" name="lead_ids" value="">
 
       <div data-how-panel="pick">
@@ -338,7 +340,7 @@
             <td><a href="{{ url_for('lead', lead_id=m.lead_id) }}">{{ m.to_email }}</a></td>
             <td>{{ m.position }}{{ m.label }}</td>
             <td class="truncate">{{ m.subject }}</td>
-            <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+            <td>{{ badge('bounced') if m.bounced_at else badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
           </tr>
         {% endfor %}
         </tbody>
@@ -362,7 +364,13 @@
     <form class="card" method="post" action="{{ url_for('campaign_settings', campaign_id=campaign.id) }}">{{ csrf() }}
       <div class="card-head"><h2>Campaign settings</h2></div>
       <div class="field"><label for="name">Name</label><input id="name" type="text" name="name" value="{{ campaign.name }}" maxlength="120"></div>
-      <div class="field"><label class="check"><input type="checkbox" name="auto_enroll" {{ 'checked' if campaign.auto_enroll }}> Auto-enroll new leads after each sheet sync (while active)</label></div>
+      <div class="field"><label for="list_id">Lead list</label>
+        <select id="list_id" name="list_id">
+          <option value="">All lists</option>
+          {% for l in all_lists %}<option value="{{ l.id }}" {{ 'selected' if l.id == campaign.list_id }}>{{ l.name }} ({{ l.total }})</option>{% endfor %}
+        </select>
+        <div class="hint">Where this campaign's leads come from: the default in "Add leads", and the only source for auto-enroll.</div></div>
+      <div class="field"><label class="check"><input type="checkbox" name="auto_enroll" {{ 'checked' if campaign.auto_enroll }}> Auto-enroll new leads {{ "from this list" if campaign.list_id else "from any list" }} after each sync or import (while active)</label></div>
       <div class="field">
         <label for="start_at">Don't send before</label>
         <input id="start_at" type="datetime-local" name="start_at" value="{{ start_local }}">
