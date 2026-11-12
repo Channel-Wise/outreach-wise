@@ -63,9 +63,9 @@ autoconfig.py        # ISPDB lookup
 ```python
 class Transport(Protocol):
     def send(self, mime: EmailMessage, reply_to: SentRef | None) -> SentRef: ...
-    def fetch_new(self, since: datetime) -> list[Inbound]: ...      # poll
-    def thread_replies(self, ref: SentRef) -> list[Inbound]: ...    # check_thread
-    def verify(self) -> None: ...                                   # "Bağlantıyı test et"
+    def fetch_new(self, since: datetime) -> list[Inbound]: ...  # poll
+    def thread_replies(self, ref: SentRef) -> list[Inbound]: ...  # check_thread
+    def verify(self) -> None: ...  # "Bağlantıyı test et"
 ```
 
 - `SentRef`: `{provider_id, thread_key, rfc_message_id}`. Gmail'de `thread_key = threadId`,
