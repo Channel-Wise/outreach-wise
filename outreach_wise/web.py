@@ -1,6 +1,7 @@
 """Web UI: server-rendered Flask app. Single admin user, password from ADMIN_PASSWORD."""
 
 import json
+import os
 import re
 import secrets
 import time
@@ -63,6 +64,14 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         return response
+
+    @app.url_defaults
+    def static_cache_buster(endpoint, values):
+        # /static/app.js?v=<mtime>: browsers fetch the new file after an update instead of a stale copy.
+        if endpoint == "static" and "filename" in values and "v" not in values:
+            path = os.path.join(app.static_folder, values["filename"])
+            if os.path.isfile(path):
+                values["v"] = int(os.path.getmtime(path))
 
     @app.context_processor
     def template_globals():

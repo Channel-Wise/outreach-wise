@@ -30,7 +30,7 @@
               <label class="check" style="margin:0"><input type="checkbox" name="enabled" {{ 'checked' if a.enabled }}> Enabled</label>
               <button class="btn sm">Save</button>
               {% if a.last_error %}<a class="btn sm" href="{{ url_for('account_connect') }}">Reconnect</a>{% endif %}
-              <button class="btn sm ghost danger-text" formaction="{{ url_for('account_delete', account_id=a.id) }}" onclick="return confirm('Remove this inbox? Sequences already started from it will stop.')">Remove</button>
+              <button class="btn sm ghost danger-text" formaction="{{ url_for('account_delete', account_id=a.id) }}" data-confirm="Remove this inbox? Sequences already started from it will stop.">Remove</button>
             </form>
           </td>
         </tr>

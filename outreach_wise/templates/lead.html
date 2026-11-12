@@ -10,7 +10,7 @@
   </div>
   <div class="actions">
     {% if not suppressed %}
-    <form method="post" action="{{ url_for('suppress_lead', lead_id=lead.id) }}" class="inline" onsubmit="return confirm('Never email this lead again?')">{{ csrf() }}
+    <form method="post" action="{{ url_for('suppress_lead', lead_id=lead.id) }}" class="inline" data-confirm="Never email this lead again?">{{ csrf() }}
       <button class="btn">{{ icon("suppressions") }}Suppress</button></form>
     {% endif %}
   </div>

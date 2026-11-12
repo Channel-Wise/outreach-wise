@@ -334,3 +334,10 @@ details[open] summary { margin-bottom: 10px; }
 .center-page { min-height: 100vh; display: grid; place-items: center; padding: 24px 16px; }
 .center-card { width: 100%; max-width: 380px; }
 .center-card .brand { justify-content: center; margin-bottom: 18px; }
+
+.modal { width: min(640px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); }
+.modal::backdrop { background: rgba(10, 10, 12, 0.45); }
+.modal-head, .modal-foot { display: flex; align-items: center; gap: 8px; padding: 14px 18px; }
+.modal-head { justify-content: space-between; border-bottom: 1px solid var(--border); }
+.modal-foot { justify-content: flex-end; border-top: 1px solid var(--border); }
+.modal-body { padding: 16px 18px; max-height: 70vh; overflow-y: auto; }
