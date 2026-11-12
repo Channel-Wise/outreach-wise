@@ -120,7 +120,7 @@ and its next free slot.
 | 📨 **Several inboxes** | Gmail / Google Workspace (Gmail API), Microsoft 365 / Outlook.com (OAuth) and any SMTP/IMAP mailbox. New leads are spread across inboxes, and a lead's follow-ups always come from the same inbox, in the same thread. |
 | 🔀 **Campaigns & A/B tests** | Multi-step sequences, fallbacks for missing data, and variants on any step with a significance test on reply rate. |
 | 🕘 **Scheduling** | Sending window, days, timezone and an optional start time. Sends are spread evenly across the window. |
-| 🛑 **Automatic stops** | Replies, bounces and unsubscribes (link, one-click header or an "unsubscribe" reply) end the sequence and update the suppression list. **Check inbox now** looks for them right away. |
+| 🛑 **Automatic stops** | Replies, bounces and unsubscribes (link, one-click header or an "unsubscribe" reply, in English or Turkish) end the sequence and update the suppression list. **Check inbox now** looks for them right away. |
 | 📊 **Dashboard** | Daily sends, reply rate, per-campaign performance, A/B results and the latest replies with a link to the thread. |
 | 🛡️ **Guardrails** | Per-inbox daily limits, suppression by email or whole domain, a full activity log, SPF / DKIM / DMARC **domain health** checks and a "pause all sending" switch. |
 | ✨ **AI personalization** | Optional. Playbooks research each lead and write the personal lines, and you approve them in Review. |
@@ -278,8 +278,11 @@ Configure the sheet URL, tab, email column and sync interval in **Settings → L
 the sheet with the first connected Google inbox (Viewer access is enough).
 
 - **With a header row**, every header becomes a variable: `First Name` → `{{first_name}}`,
-  `Channel URL` → `{{channel_url}}`. The email column is `email` by default, and common names
-  such as `Email Address` are detected.
+  `Channel URL` → `{{channel_url}}`, `Kanal Adı` → `{{kanal_adi}}` (accented and Turkish letters
+  become plain ones). The email column is `email` by default, and common names such as
+  `Email Address` are detected. Versions before this dropped those letters (`{{kanal_ad}}`): the
+  next sync moves such leads to the new names, and emails or playbooks that still use the old
+  names keep working.
 - **Without a header row** (detected when the first row already contains an email), columns are
   named from the *Column names* setting (`email, first_name, …`) or by letter (`{{column_b}}`),
   and the email column is found by its contents.

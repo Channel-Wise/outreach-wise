@@ -370,7 +370,7 @@ def process(
         _stop(conn, enrollment, "stopped", f"step {step['position']} has no subject and nothing to reply to")
         conn.commit()
         return "skipped"
-    variables = campaigns.lead_variables(cfg, lead)
+    variables = campaigns.lead_variables(conn, cfg, lead)
     # AI fields ({{ai_*}}): wait until they are written (and approved), never send a blank.
     if "ai_" in variant["subject"] + variant["body"]:
         from .ai import scheduler  # noqa: PLC0415 — optional feature, avoids an import cycle

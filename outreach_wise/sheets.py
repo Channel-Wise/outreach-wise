@@ -12,6 +12,7 @@ from . import campaigns, db, lists
 from .config import Config
 from .google import Google, GoogleError
 from .security import decrypt
+from .text import fold
 
 EMAIL = re.compile(r"^[^@\s,;<>]+@[^@\s,;<>]+\.[a-z0-9-]{2,}$")
 EMAIL_COLUMN_GUESSES = ("email", "email_address", "e_mail", "mail", "contact_email")
@@ -22,7 +23,55 @@ class SyncError(Exception):
 
 
 def normalize_key(header: str) -> str:
+    """A column header as a variable name: "First Name" -> first_name, "Kanal Adı" -> kanal_adi."""
+    return re.sub(r"[^a-z0-9]+", "_", fold(str(header).strip()).lower()).strip("_")
+
+
+def legacy_key(header: str) -> str:
+    """The name a header got before letters were folded, when "Kanal Adı" became kanal_ad."""
     return re.sub(r"[^a-z0-9]+", "_", str(header).strip().lower()).strip("_")
+
+
+def renamed_keys(headers: list[str]) -> dict[str, str]:
+    """{old name: new name} for headers whose variable name changed when letters started to be
+    folded. Left out: old names that are another column's current name or that two headers shared."""
+    current = {normalize_key(header) for header in headers}
+    targets: dict[str, set[str]] = {}
+    for header in headers:
+        targets.setdefault(legacy_key(header), set()).add(normalize_key(header))
+    return {old: new.pop() for old, new in targets.items() if old and old not in current and len(new) == 1}
+
+
+def migrate_renamed_keys(conn: sqlite3.Connection, headers: list[str]) -> dict[str, str]:
+    """Leads imported before letters were folded store kanal_ad, not kanal_adi. Move every lead to
+    the new names (whichever list or file it came from, so no lead is left behind under the old
+    name), and remember the old names so emails and playbooks that use {{kanal_ad}} keep working
+    (campaigns.with_old_names). Returns the renames it found."""
+    renamed = renamed_keys(headers)
+    found: dict[str, str] = {}
+    if not renamed:
+        return found
+    for row in conn.execute("SELECT id, fields FROM leads").fetchall():
+        fields = json.loads(row["fields"])
+        olds = [old for old in renamed if old in fields]
+        for old in olds:
+            fields.setdefault(renamed[old], fields.pop(old))  # a value already under the new name is newer
+            found[old] = renamed[old]
+        if olds:
+            conn.execute(
+                "UPDATE leads SET fields = ? WHERE id = ?",
+                (json.dumps(fields, ensure_ascii=False, sort_keys=True), row["id"]),
+            )
+    if found:
+        db.set_kv(conn, campaigns.RENAMED_COLUMNS, {**campaigns.renamed_columns(conn), **found})
+        names = ", ".join(f"{{{{{old}}}}} is now {{{{{new}}}}}" for old, new in sorted(found.items()))
+        db.log_event(
+            conn,
+            "sync",
+            f"Column names now keep Turkish and accented letters: {names}. "
+            "Emails and playbooks that use the old names keep working.",
+        )
+    return found
 
 
 def normalize_email(value: str) -> str | None:
@@ -129,6 +178,7 @@ def import_rows(
     """Rows (header first, or none) from a sheet or a file → leads in a list. Records the run
     on the list and in the activity log, then auto-enrolls. Returns the counters."""
     leads, stats = parse_rows(rows, email_column or "email", column_names)
+    migrate_renamed_keys(conn, rows[0] if rows and stats["header"] else column_names.split(","))
     stats["created"], stats["updated"] = lists.upsert(conn, leads, list_id)
     stats["enrolled"] = campaigns.auto_enroll(conn)
     stats.update(at=db.iso(db.now()), source=source)

@@ -18,6 +18,7 @@ from . import db, transports
 from .config import Config
 from .google import Google
 from .security import decrypt
+from .text import fold
 
 BOUNCE_SENDERS = ("mailer-daemon@", "postmaster@", "mail-daemon@")
 BOUNCE_SUBJECTS = (
@@ -45,9 +46,42 @@ UNSUBSCRIBE = re.compile(
     r"\b(unsubscribe|remove me|opt[ -]?out|stop (emailing|contacting|sending)|take me off|do not (email|contact))\b",
     re.IGNORECASE,
 )
+# Turkish asks, matched on folded text (text.fold: "çıkarın" -> "cikarin"), so replies typed
+# without Turkish letters count too. Only requests and wishes match, never their negations
+# ("çıkarmayın", "çıkmak istemiyorum") or a creator's "abonelikten çıkanlar" (unsubscribed viewers).
+_WANT = r"ist(?:iyoru[mz]|eri[mz])"  # istiyorum, istiyoruz, isterim, isteriz
+_CAN = r"(?:\s*mi\w*|siniz|seniz)"  # çıkarabilir misiniz, çıkarabilirsiniz, çıkarabilirseniz
+_REMOVE = rf"""(?:
+      cik(?:mak\s+{_WANT}|iyoru[mz]|is\s+yap(?:mak\s+{_WANT}|in(?:iz)?))?
+    | (?:cikart?|kaldir)(?:in(?:iz)?|ir\s*mi\w*|abilir{_CAN}|irsaniz|manizi|ilma(?:mi|sini)|ilmak\s+{_WANT})?
+    | sil(?:in(?:iz)?|er\s*mi\w*|ebilir{_CAN}|erseniz|menizi|inme(?:mi|sini)|inmek\s+{_WANT})?
+    )\b(?!\s+istem)"""
+UNSUBSCRIBE_TR = re.compile(
+    rf"""\b(?:
+      # (beni) (mail) listenizden çıkarın / silin / kaldırın, abonelikten çık(mak istiyorum)
+      (?:abonelikten|liste(?:den|nden|nizden|lerden|lerinizden)|bulten(?:den|inden|inizden)
+        |(?:e[-\s]?posta|e-?mail|mail|gonderim|dagitim)\s+listesinden)
+      (?:\s+\S+){{0,2}}?\s+{_REMOVE}
+    | (?:beni|bizi)\s+(?:lutfen\s+)?{_REMOVE}
+      # bana e-posta göndermeyin, mail atmayın, maillerinizi göndermeyi bırakın, e-posta almak istemiyorum
+    | (?:e[-\s]?posta|e-?mail|mail|ileti|mesaj)(?:l[ae]r\w*)?\s+(?:\S+\s+)?
+      (?:(?:gonder|at|yolla)m[ae](?:yin(?:iz)?\b|yi\s+(?:birak|kes|durdur))|almak\s+istem(?:iyoru[mz]|em)\b)
+      # bir daha yazmayın, artık göndermeyin
+    | (?:bir\s+daha|artik)\s+(?:bana\s+|bize\s+)?(?:gonder|at|yolla|yaz)m[ae]yin(?:iz)?\b
+      # benimle iletişime geçmeyin
+    | (?:benimle|bizimle|bir\s+daha|artik|lutfen)\s+(?:\S+\s+)?(?:iletisime|irtibata)\s+gecmeyin(?:iz)?\b
+      # aboneliğimi iptal edin
+    | aboneligimi\s+(?:\S+\s+)?iptal\s+
+      (?:edin(?:iz)?|eder\s*mi\w*|edebilir{_CAN}|ederseniz|etmenizi|etmek\s+{_WANT})\b(?!\s+istem)
+    )""",
+    re.IGNORECASE | re.VERBOSE,
+)
 # Where quoted history starts in a reply; our own footer must not trigger an unsubscribe.
+# Turkish clients write "… tarihinde … yazdı:", "Kimden: … Gönderildi:" and "-----Özgün İleti-----".
 QUOTE_START = re.compile(
-    r"\bOn .{0,200}?wrote:|-----\s*Original Message|\bFrom: .{0,100}\bSent: |^>", re.S | re.M
+    r"\bOn .{0,200}?wrote:|-----\s*Original Message|\bFrom: .{0,100}\bSent: |^>"
+    r"|\btarihinde .{0,200}?yazdı:|-----\s*(?:Özgün|Orijinal) (?:İleti|Mesaj)|\bKimden: .{0,100}\bGönderildi: ",
+    re.S | re.M,
 )
 EMAIL_IN_TEXT = re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+")
 OUTCOME_STATUS = {"reply": "replied", "unsubscribe": "unsubscribed", "bounce": "bounced"}
@@ -55,6 +89,11 @@ OUTCOME_STATUS = {"reply": "replied", "unsubscribe": "unsubscribed", "bounce": "
 
 def sender_of(message: dict) -> str:
     return parseaddr(message["headers"].get("from", ""))[1].lower()
+
+
+def asks_to_unsubscribe(text: str) -> bool:
+    text = fold(text)
+    return bool(UNSUBSCRIBE.search(text) or UNSUBSCRIBE_TR.search(text))
 
 
 def own_text(snippet: str, own_email: str = "") -> str:
@@ -89,7 +128,7 @@ def classify(message: dict, own_email: str = "") -> str:
     )
     if automatic or subject.startswith(AUTO_REPLY_SUBJECTS):
         return "auto_reply"
-    if UNSUBSCRIBE.search(subject) or UNSUBSCRIBE.search(
+    if asks_to_unsubscribe(subject) or asks_to_unsubscribe(
         own_text(html.unescape(message["snippet"]), own_email)
     ):
         return "unsubscribe"
