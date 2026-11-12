@@ -20,7 +20,7 @@
           <td class="mono">{{ s.value }}</td>
           <td><span class="badge plain">{{ s.reason }}</span></td>
           <td class="muted nowrap">{{ s.created_at | local("%b %d, %Y") }}</td>
-          <td class="num"><form method="post" action="{{ url_for('suppression_delete', suppression_id=s.id) }}" class="inline" onsubmit="return confirm('Allow emailing this again?')">{{ csrf() }}<button class="btn sm ghost">Remove</button></form></td>
+          <td class="num"><form method="post" action="{{ url_for('suppression_delete', suppression_id=s.id) }}" class="inline" data-confirm="Allow emailing this again?">{{ csrf() }}<button class="btn sm ghost">Remove</button></form></td>
         </tr>
       {% endfor %}
       </tbody>

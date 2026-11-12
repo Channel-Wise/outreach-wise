@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, csrf with context %}
+{% block title %}Templates{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Templates</h1><p>Saved email ideas. Copy one, or pick it from <strong>Use a template</strong> while editing a step in any campaign.</p></div>
+  <div class="actions"><button type="button" class="btn primary" data-new>{{ icon("plus") }}New template</button></div>
+</div>
+
+<div class="toolbar">
+  <input type="search" id="tpl-search" placeholder="Search templates…" aria-label="Search templates">
+  <div class="segmented" role="group" aria-label="Category">
+    <button type="button" class="on" data-cat="">All</button>
+    {% for c in categories %}<button type="button" data-cat="{{ c }}">{{ c }}</button>{% endfor %}
+  </div>
+</div>
+
+{% if templates %}
+<div class="tpl-grid" id="tpl-grid">
+  {% for t in templates %}
+  <article class="tpl-card" id="template-{{ t.id }}" data-id="{{ t.id }}" data-cat="{{ t.category }}"
+    data-search="{{ (t.name ~ ' ' ~ t.subject ~ ' ' ~ t.body) | lower }}">
+    <header>
+      <div class="grow">
+        <h3>{{ t.name }}</h3>
+        <span class="badge plain">{{ t.category }}</span>
+      </div>
+    </header>
+    <div class="tpl-subject">{% if t.subject %}<span class="muted">Subject</span> {{ t.subject }}{% else %}<span class="muted">Replies in the same thread (no subject)</span>{% endif %}</div>
+    <pre class="tpl-body">{{ t.body }}</pre>
+    <footer>
+      <button type="button" class="btn sm" data-copy="{{ t.id }}">{{ icon("copy") }}Copy</button>
+      <button type="button" class="btn sm ghost" data-edit="{{ t.id }}">Edit</button>
+      <span class="spacer"></span>
+      <form method="post" action="{{ url_for('template_delete', template_id=t.id) }}" class="inline" data-confirm="Delete “{{ t.name }}”?">{{ csrf() }}
+        <button class="btn sm ghost danger-text">Delete</button>
+      </form>
+    </footer>
+  </article>
+  {% endfor %}
+</div>
+<p class="muted small" id="tpl-none" hidden>No templates match.</p>
+{% else %}
+<div class="card"><div class="empty"><h3>No templates yet</h3><p>Save an email you like here, or use “Save as template” in the campaign editor.</p></div></div>
+{% endif %}
+
+<dialog class="modal" id="tpl-dialog">
+  <form method="post" id="tpl-form">{{ csrf() }}
+    <div class="modal-head"><h2 id="tpl-title">New template</h2><button type="button" class="btn sm ghost" data-close aria-label="Close">{{ icon("close") }}</button></div>
+    <div class="modal-body">
+      <div class="fields-2">
+        <div class="field"><label for="tpl-name">Name</label><input id="tpl-name" type="text" name="name" required maxlength="120" placeholder="e.g. Value-first intro"></div>
+        <div class="field"><label for="tpl-category">Category</label>
+          <select id="tpl-category" name="category">{% for c in categories %}<option>{{ c }}</option>{% endfor %}</select></div>
+      </div>
+      <div class="field"><label for="tpl-subject">Subject</label><input id="tpl-subject" type="text" name="subject" maxlength="250" data-insert placeholder="Leave empty for follow-ups that reply in the same thread"></div>
+      <div class="field"><label for="tpl-body">Body</label><textarea id="tpl-body" name="body" rows="12" required data-insert></textarea></div>
+      <div class="chips">{% for v in variables %}<button type="button" class="chip" data-var="{{ v }}">{{ '{{' ~ v ~ '}}' }}</button>{% endfor %}</div>
+    </div>
+    <div class="modal-foot"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn primary">Save template</button></div>
+  </form>
+</dialog>
+<script type="application/json" id="tpl-data">{{ templates | tojson }}</script>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(() => {
+  const templates = JSON.parse(document.getElementById("tpl-data").textContent);
+  const byId = Object.fromEntries(templates.map((t) => [t.id, t]));
+  const dialog = document.getElementById("tpl-dialog");
+  const form = document.getElementById("tpl-form");
+  const base = "{{ url_for('template_create') }}";
+
+  function open(t) {
+    document.getElementById("tpl-title").textContent = t ? "Edit template" : "New template";
+    form.action = t ? `${base}/${t.id}` : base;
+    form.name.value = t?.name ?? "";
+    form.category.value = t?.category ?? "First email";
+    form.subject.value = t?.subject ?? "";
+    form.body.value = t?.body ?? "";
+    dialog.showModal();
+    form.name.focus();
+  }
+  document.querySelector("[data-new]").addEventListener("click", () => open(null));
+  document.querySelectorAll("[data-edit]").forEach((b) => b.addEventListener("click", () => open(byId[b.dataset.edit])));
+  dialog.querySelectorAll("[data-close]").forEach((b) => b.addEventListener("click", () => dialog.close()));
+
+  document.querySelectorAll("[data-copy]").forEach((b) =>
+    b.addEventListener("click", async () => {
+      const t = byId[b.dataset.copy];
+      const text = (t.subject ? `Subject: ${t.subject}\n\n` : "") + t.body;
+      try { await navigator.clipboard.writeText(text); } catch { return; }
+      const label = b.lastChild.textContent;
+      b.lastChild.textContent = "Copied";
+      setTimeout(() => (b.lastChild.textContent = label), 1400);
+    })
+  );
+
+  // Filter by search text and category.
+  const search = document.getElementById("tpl-search");
+  let cat = "";
+  function filter() {
+    const q = search.value.trim().toLowerCase();
+    let shown = 0;
+    document.querySelectorAll(".tpl-card").forEach((card) => {
+      const ok = (!cat || card.dataset.cat === cat) && (!q || card.dataset.search.includes(q));
+      card.hidden = !ok;
+      shown += ok;
+    });
+    const none = document.getElementById("tpl-none");
+    if (none) none.hidden = shown > 0;
+  }
+  search.addEventListener("input", filter);
+  document.querySelectorAll("[data-cat]").forEach((b) =>
+    b.addEventListener("click", () => {
+      cat = b.dataset.cat;
+      document.querySelectorAll("[data-cat]").forEach((x) => x.classList.toggle("on", x === b));
+      filter();
+    })
+  );
+
+  // Variable chips insert at the cursor.
+  let target = null;
+  document.querySelectorAll("[data-insert]").forEach((el) => el.addEventListener("focus", () => (target = el)));
+  document.querySelectorAll(".chip[data-var]").forEach((chip) =>
+    chip.addEventListener("click", () => {
+      if (!target) target = form.body;
+      target.setRangeText("{" + "{" + chip.dataset.var + "}" + "}", target.selectionStart, target.selectionEnd, "end");
+      target.focus();
+    })
+  );
+})();
+</script>
+{% endblock %}

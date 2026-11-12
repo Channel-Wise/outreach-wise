@@ -163,14 +163,64 @@ def _stop(conn: sqlite3.Connection, enrollment: sqlite3.Row, status: str, reason
     )
 
 
-def _pick_variant(conn: sqlite3.Connection, step_id: int) -> sqlite3.Row | None:
-    """Balanced A/B split: the active variant with the fewest messages so far."""
+def _previous_variant(conn: sqlite3.Connection, enrollment: sqlite3.Row, position: int) -> sqlite3.Row | None:
+    """The variant this lead was sent at the step before `position`."""
     return conn.execute(
-        "SELECT v.* FROM variants v WHERE v.step_id = ? AND v.active = 1"
-        " ORDER BY (SELECT COUNT(*) FROM messages m WHERE m.variant_id = v.id AND m.status != 'failed'), v.label"
-        " LIMIT 1",
-        (step_id,),
+        "SELECT v.* FROM messages m JOIN steps s ON s.id = m.step_id JOIN variants v ON v.id = m.variant_id"
+        " WHERE m.enrollment_id = ? AND s.position = ?",
+        (enrollment["id"], position - 1),
     ).fetchone()
+
+
+def _pick_variant(
+    conn: sqlite3.Connection, step_id: int, previous_id: int | None = None
+) -> sqlite3.Row | None:
+    """Weighted A/B split: the option furthest behind its share.
+
+    Options: variants linked to the variant the lead got in the previous step (variant_links)
+    win over general ones; general variants (no links) go to everyone without a linked
+    follow-up. Each option's share is its weight (the link's for a linked follow-up, the
+    variant's otherwise) out of the options' total; weight 0 = never picked.
+
+    Shares are kept among the leads coming from the same previous variant: the tally counts
+    picks for leads whose previous email was `previous_id` (all leads for the first email).
+    A pick = a message (not failed) or a variant pinned ahead of time for an active enrollment.
+    """
+    options = conn.execute(
+        "SELECT v.*, COALESCE((SELECT l.weight FROM variant_links l WHERE l.variant_id = v.id"
+        "  AND l.parent_id = :prev), v.weight) AS share"
+        " FROM variants v WHERE v.step_id = :step AND v.active = 1 AND ("
+        " EXISTS (SELECT 1 FROM variant_links l WHERE l.variant_id = v.id AND l.parent_id = :prev)"
+        " OR (NOT EXISTS (SELECT 1 FROM variant_links l WHERE l.variant_id = v.id)"
+        "  AND NOT EXISTS (SELECT 1 FROM variants x JOIN variant_links l ON l.variant_id = x.id"
+        "   WHERE x.step_id = v.step_id AND x.active = 1 AND l.parent_id = :prev)))"
+        " ORDER BY v.label",
+        {"step": step_id, "prev": previous_id},
+    ).fetchall()
+    if not options:
+        return None
+    came_from = (
+        ""
+        if previous_id is None
+        else " AND EXISTS (SELECT 1 FROM messages p WHERE p.enrollment_id = {e} AND p.variant_id = :prev)"
+    )
+    tally_sql = (
+        "SELECT (SELECT COUNT(*) FROM messages m WHERE m.variant_id = :v AND m.status != 'failed'"
+        + came_from.format(e="m.enrollment_id")
+        + ") + (SELECT COUNT(*) FROM enrollments e WHERE e.pinned_variant_id = :v AND e.status = 'active'"
+        + came_from.format(e="e.id")
+        + ")"
+    )
+    weights = [o["share"] for o in options] if any(o["share"] > 0 for o in options) else [1] * len(options)
+    best, best_key = None, None
+    for option, weight in zip(options, weights, strict=True):
+        if weight <= 0:
+            continue
+        tally = conn.execute(tally_sql, {"v": option["id"], "prev": previous_id}).fetchone()[0]
+        key = ((tally + 1) / weight, option["label"])  # lowest = most behind its share
+        if best_key is None or key < best_key:
+            best, best_key = option, key
+    return best
 
 
 def process(
@@ -208,9 +258,22 @@ def process(
         _stop(conn, enrollment, "completed", None)
         conn.commit()
         return "skipped"
-    variant = _pick_variant(conn, step["id"])
+    previous = _previous_variant(conn, enrollment, step["position"]) if step["position"] > 1 else None
+    variant = _pick_variant(conn, step["id"], previous["id"] if previous else None)
     if not variant:
-        _stop(conn, enrollment, "stopped", f"step {step['position']} has no active variant")
+        has_active = conn.execute(
+            "SELECT 1 FROM variants WHERE step_id = ? AND active = 1", (step["id"],)
+        ).fetchone()
+        if has_active and previous:
+            # Branching: no follow-up was written for this lead's variant, so their sequence ends here.
+            _stop(
+                conn,
+                enrollment,
+                "completed",
+                f"no step {step['position']} email for variant {previous['label']}",
+            )
+        else:
+            _stop(conn, enrollment, "stopped", f"step {step['position']} has no active variant")
         conn.commit()
         return "skipped"
 

@@ -46,6 +46,7 @@ def test_every_page_renders(client, conn, cfg, google, account):
         "/activity?kind=dry_run",
         "/suppressions",
         "/settings",
+        "/templates",
     ]:
         response = client.get(path)
         assert response.status_code == 200, path

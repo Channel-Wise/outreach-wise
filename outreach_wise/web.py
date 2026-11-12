@@ -1,6 +1,7 @@
 """Web UI: server-rendered Flask app. Single admin user, password from ADMIN_PASSWORD."""
 
 import json
+import os
 import re
 import secrets
 import time
@@ -8,9 +9,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
 
-from . import campaigns, db, inbox, sender, sheets
+from . import campaigns, db, inbox, library, sender, sheets
 from .config import Config
 from .google import SCOPES, Google, GoogleError
 from .security import encrypt, password_matches, read_unsubscribe_token
@@ -63,6 +64,14 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
         response.headers.setdefault("Referrer-Policy", "same-origin")
         return response
+
+    @app.url_defaults
+    def static_cache_buster(endpoint, values):
+        # /static/app.js?v=<mtime>: browsers fetch the new file after an update instead of a stale copy.
+        if endpoint == "static" and "filename" in values and "v" not in values:
+            path = os.path.join(app.static_folder, values["filename"])
+            if os.path.isfile(path):
+                values["v"] = int(os.path.getmtime(path))
 
     @app.context_processor
     def template_globals():
@@ -354,6 +363,17 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             eligible_contacted=campaigns.count_eligible(c, campaign_id, include_contacted=True),
             start_local=start_local,
             variables=_template_variables(c),
+            sequence=campaigns.sequence(c, row),
+            report=_campaign_report(c, row, tz()),
+            templates=library.all_templates(c),
+            template_categories=library.CATEGORIES,
+            picker=_lead_picker(c, campaign_id),
+            enrolled=c.execute(
+                "SELECT e.status, e.next_step, e.next_send_at, e.stop_reason, l.id, l.email, l.fields"
+                " FROM enrollments e JOIN leads l ON l.id = e.lead_id WHERE e.campaign_id = ?"
+                " ORDER BY e.id DESC LIMIT 500",
+                (campaign_id,),
+            ).fetchall(),
             stop_reasons=c.execute(
                 "SELECT stop_reason, COUNT(*) AS n FROM enrollments WHERE campaign_id = ? AND status = 'stopped'"
                 " GROUP BY stop_reason ORDER BY n DESC LIMIT 6",
@@ -408,24 +428,48 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
     def campaign_enroll(campaign_id: int):
         c = conn()
         load_campaign(campaign_id)
+        how = request.form.get("how", "first")
         limit = request.form.get("limit", "").strip()
-        count = campaigns.enroll(
-            c,
-            campaign_id,
-            int(limit) if limit.isdigit() and int(limit) > 0 else None,
-            include_contacted=request.form.get("include_contacted") == "on",
-        )
+        limit_n = int(limit) if limit.isdigit() and int(limit) > 0 else None
+        include_contacted = request.form.get("include_contacted") == "on"
+        if how == "pick":
+            ids = [int(i) for i in request.form.get("lead_ids", "").split(",") if i.strip().isdigit()]
+            if not ids:
+                flash("Select at least one lead.", "error")
+                return redirect(url_for("campaign", campaign_id=campaign_id) + "#leads")
+            # Hand-picked contacted leads are allowed: picking them is the explicit opt-in.
+            count = campaigns.enroll(c, campaign_id, include_contacted=True, lead_ids=ids)
+        else:
+            count = campaigns.enroll(
+                c, campaign_id, limit_n, include_contacted=include_contacted, shuffle=how == "random"
+            )
         c.commit()
         flash(f"Enrolled {count} leads.", "success" if count else "info")
-        return redirect(url_for("campaign", campaign_id=campaign_id))
+        return redirect(url_for("campaign", campaign_id=campaign_id) + "#leads")
+
+    @app.post("/campaigns/<int:campaign_id>/unenroll")
+    def campaign_unenroll(campaign_id: int):
+        c = conn()
+        load_campaign(campaign_id)
+        ids = [int(i) for i in request.form.getlist("lead_id") if i.isdigit()]
+        count = campaigns.unenroll(c, campaign_id, ids)
+        c.commit()
+        flash(
+            f"Removed {count} lead{'s' if count != 1 else ''} from this campaign.",
+            "success" if count else "info",
+        )
+        return redirect(url_for("campaign", campaign_id=campaign_id) + "#leads")
 
     @app.post("/campaigns/<int:campaign_id>/steps")
     def step_add(campaign_id: int):
         c = conn()
         load_campaign(campaign_id)
-        campaigns.add_step(c, campaign_id, delay_days=3)
-        c.commit()
-        return redirect(url_for("campaign", campaign_id=campaign_id) + "#sequence")
+        step_id = campaigns.add_step(c, campaign_id, delay_days=3)
+        return done(campaign_id, None, "Follow-up added.", f"step-{step_id}", step_id=step_id)
+
+    @app.get("/campaigns/<int:campaign_id>/sequence")
+    def campaign_sequence(campaign_id: int):
+        return sequence_json(campaign_id)
 
     @app.post("/campaigns/<int:campaign_id>/delete")
     def campaign_delete(campaign_id: int):
@@ -453,7 +497,26 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         ).fetchone() or abort(404)
         return row["campaign_id"]
 
-    def done(campaign_id: int, error: str | None, success: str, anchor: str = "sequence"):
+    def wants_json() -> bool:
+        return request.headers.get("X-Requested-With") == "fetch"
+
+    def sequence_json(campaign_id: int, error: str | None = None, **extra):
+        row = load_campaign(campaign_id)
+        payload = {
+            "ok": not error,
+            "error": error,
+            "steps": campaigns.sequence(conn(), row),
+            "stats": campaigns.stats(conn(), row),
+        }
+        return jsonify({**payload, **extra}), (400 if error else 200)
+
+    def done(campaign_id: int, error: str | None, success: str, anchor: str = "sequence", **extra):
+        if wants_json():
+            if error:
+                conn().rollback()
+            else:
+                conn().commit()
+            return sequence_json(campaign_id, error, message=success, **extra)
         if error:
             conn().rollback()
             flash(error, "error")
@@ -482,7 +545,7 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         campaign_id = step_campaign(step_id)
         return done(
             campaign_id,
-            campaigns.add_variant(conn(), step_id),
+            campaigns.add_variant(conn(), step_id, _optional_id(request.form.get("parent_id"))),
             "Variant added. Edit it to test something different.",
             f"step-{step_id}",
         )
@@ -499,10 +562,84 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         )
         return done(campaign_id, error, "Email saved.", f"variant-{variant_id}")
 
+    @app.post("/steps/<int:step_id>/split")
+    def step_split(step_id: int):
+        """Set the % split for leads coming from one previous variant (or for the first email)."""
+        campaign_id = step_campaign(step_id)
+        percents = {}
+        for key, value in request.form.items():
+            if key.startswith("share_") and key[6:].isdigit():
+                if not value.strip().isdigit():
+                    return done(campaign_id, "Shares must be whole numbers.", "")
+                percents[int(key[6:])] = int(value)
+        error = campaigns.set_split(conn(), step_id, _optional_id(request.form.get("parent_id")), percents)
+        return done(campaign_id, error, "Split saved.", f"step-{step_id}")
+
+    @app.post("/variants/<int:variant_id>/links")
+    def variant_link(variant_id: int):
+        """Connect / disconnect a follow-up and a variant of the previous step (canvas drag & click)."""
+        campaign_id = variant_campaign(variant_id)
+        parent_id = _optional_id(request.form.get("parent_id"))
+        if parent_id is None:
+            return done(campaign_id, "Choose an email to connect.", "")
+        connect = request.form.get("action", "connect") != "disconnect"
+        error = campaigns.link(conn(), variant_id, parent_id, connect)
+        return done(campaign_id, error, "Connected." if connect else "Disconnected.", f"variant-{variant_id}")
+
     @app.post("/variants/<int:variant_id>/delete")
     def variant_delete(variant_id: int):
         campaign_id = variant_campaign(variant_id)
         return done(campaign_id, campaigns.delete_variant(conn(), variant_id), "Variant deleted.")
+
+    # --- template library -------------------------------------------------------------------
+
+    @app.get("/templates")
+    def template_list():
+        return render_template(
+            "templates.html",
+            templates=library.all_templates(conn()),
+            categories=library.CATEGORIES,
+            variables=_template_variables(conn()),
+        )
+
+    def template_saved(template_id: int | None, error: str | None, success: str):
+        c = conn()
+        if error:
+            c.rollback()
+        else:
+            c.commit()
+        if wants_json():
+            return jsonify(
+                {"ok": not error, "error": error, "message": success, "templates": library.all_templates(c)}
+            ), (400 if error else 200)
+        flash(error or success, "error" if error else "success")
+        return back(url_for("template_list") + (f"#template-{template_id}" if template_id else ""))
+
+    @app.post("/templates")
+    def template_create():
+        f = request.form
+        template_id, error = library.save(
+            conn(), f.get("name", ""), f.get("category", ""), f.get("subject", ""), f.get("body", "")
+        )
+        return template_saved(template_id, error, "Template saved to your library.")
+
+    @app.post("/templates/<int:template_id>")
+    def template_update(template_id: int):
+        f = request.form
+        _, error = library.save(
+            conn(),
+            f.get("name", ""),
+            f.get("category", ""),
+            f.get("subject", ""),
+            f.get("body", ""),
+            template_id,
+        )
+        return template_saved(template_id, error, "Template updated.")
+
+    @app.post("/templates/<int:template_id>/delete")
+    def template_delete(template_id: int):
+        library.delete(conn(), template_id)
+        return template_saved(None, None, "Template deleted.")
 
     @app.get("/campaigns/<int:campaign_id>/preview")
     def campaign_preview(campaign_id: int):
@@ -796,6 +933,66 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         return render_template("unsubscribe.html", state="confirm", token=token, sender_name=sender_name)
 
     return app
+
+
+def _optional_id(value: str | None) -> int | None:
+    return int(value) if value and value.isdigit() else None
+
+
+def _campaign_report(conn, campaign, zone: ZoneInfo) -> dict:
+    """Data for the Results dashboard: daily activity, per-step funnel and where leads are now."""
+    cid, mode = campaign["id"], campaign["mode"]
+    today = db.now().astimezone(zone).date()
+    first = conn.execute(
+        "SELECT MIN(COALESCE(sent_at, created_at)) FROM messages WHERE campaign_id = ? AND mode = ?",
+        (cid, mode),
+    ).fetchone()[0]
+    start = db.parse(first).astimezone(zone).date() if first else today
+    span = min(max((today - start).days + 1, 14), 60)
+    days = [today - timedelta(days=i) for i in range(span - 1, -1, -1)]
+    series = {day: {"sent": 0, "replies": 0} for day in days}
+    for sent_at, replied_at in conn.execute(
+        "SELECT COALESCE(sent_at, created_at), replied_at FROM messages"
+        " WHERE campaign_id = ? AND mode = ? AND status IN ('sent', 'dry_run')",
+        (cid, mode),
+    ):
+        for key, stamp in (("sent", sent_at), ("replies", replied_at)):
+            if stamp:
+                day = db.parse(stamp).astimezone(zone).date()
+                if day in series:
+                    series[day][key] += 1
+    daily = [{"label": d.strftime("%b %d"), "weekday": d.strftime("%a"), **series[d]} for d in days]
+
+    funnel = [
+        dict(row) | {"rate": row["replies"] / row["sent"] if row["sent"] else 0.0}
+        for row in conn.execute(
+            "SELECT s.position, COUNT(CASE WHEN m.status IN ('sent', 'dry_run') THEN 1 END) AS sent,"
+            " COUNT(m.replied_at) AS replies FROM steps s"
+            " LEFT JOIN messages m ON m.step_id = s.id AND m.mode = ?"
+            " WHERE s.campaign_id = ? GROUP BY s.id ORDER BY s.position",
+            (mode, cid),
+        )
+    ]
+    return {
+        "daily": daily,
+        "daily_top": _nice_ceiling(max(max(d["sent"], d["replies"]) for d in daily)),
+        "funnel": funnel,
+        "funnel_top": max([f["sent"] for f in funnel] + [1]),
+        "rate_top": max([f["rate"] for f in funnel] + [0.0001]),
+    }
+
+
+def _lead_picker(conn, campaign_id: int) -> dict:
+    """Eligible leads for the picker: id, email, status and their sheet columns."""
+    rows = campaigns.eligible_leads(conn, campaign_id, include_contacted=True)
+    leads, columns = [], []
+    for row in rows:
+        fields = json.loads(row["fields"])
+        for key in fields:
+            if key not in columns and "email" not in key:
+                columns.append(key)
+        leads.append({"id": row["id"], "email": row["email"], "status": row["status"], "fields": fields})
+    return {"leads": leads, "columns": columns, "capped": len(rows) >= 5000}
 
 
 def _template_variables(conn) -> list[str]:

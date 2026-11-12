@@ -17,6 +17,7 @@
         ("dashboard", "Dashboard", "dashboard", ["dashboard"]),
         ("leads", "Leads", "leads", ["leads", "lead"]),
         ("campaign_list", "Campaigns", "campaigns", ["campaign_list", "campaign", "campaign_preview"]),
+        ("template_list", "Templates", "templates", ["template_list"]),
         ("activity", "Activity", "activity", ["activity"]),
         ("suppressions", "Suppressions", "suppressions", ["suppressions"]),
         ("settings_page", "Settings", "settings", ["settings_page"]),
@@ -43,6 +44,7 @@
     {% block content %}{% endblock %}
   </main>
 </div>
+<script src="{{ url_for('static', filename='app.js') }}"></script>
 {% block scripts %}{% endblock %}
 </body>
 </html>

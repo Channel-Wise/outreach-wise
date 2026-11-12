@@ -170,6 +170,136 @@ MIGRATIONS = [
         expires_at TEXT NOT NULL
     );
     """,
+    """
+    -- Saved email ideas the user can paste into any step (seeded by library.seed()).
+    CREATE TABLE email_templates (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'First email',
+        subject TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        builtin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
+    """
+    -- Branching follow-ups: a variant can be reserved for leads who got a specific variant
+    -- of the previous step. NULL = everyone without a dedicated variant.
+    ALTER TABLE variants ADD COLUMN after_variant_id INTEGER REFERENCES variants(id) ON DELETE SET NULL;
+    """,
+    """
+    -- Inboxes connected over SMTP/IMAP with a username + (app) password (see transports/).
+    -- transport: gmail_api | smtp_imap. For smtp_imap, refresh_token is '' and `secret` holds
+    -- the password, encrypted with SECRET_KEY. (Columns are added rather than rebuilding the
+    -- table: dropping `accounts` would null enrollments.account_id through its foreign key.)
+    ALTER TABLE accounts ADD COLUMN transport TEXT NOT NULL DEFAULT 'gmail_api';
+    ALTER TABLE accounts ADD COLUMN username TEXT;
+    ALTER TABLE accounts ADD COLUMN secret TEXT;
+    ALTER TABLE accounts ADD COLUMN smtp_host TEXT;
+    ALTER TABLE accounts ADD COLUMN smtp_port INTEGER NOT NULL DEFAULT 587;
+    ALTER TABLE accounts ADD COLUMN smtp_security TEXT NOT NULL DEFAULT 'starttls';
+    ALTER TABLE accounts ADD COLUMN imap_host TEXT;
+    ALTER TABLE accounts ADD COLUMN imap_port INTEGER NOT NULL DEFAULT 993;
+    ALTER TABLE accounts ADD COLUMN imap_security TEXT NOT NULL DEFAULT 'ssl';
+    ALTER TABLE accounts ADD COLUMN save_sent INTEGER;  -- NULL: decide from the SMTP host
+    ALTER TABLE accounts ADD COLUMN sent_folder TEXT;
+    -- Replies to SMTP-sent mail are matched by In-Reply-To / References.
+    CREATE INDEX messages_rfc_message_id ON messages(rfc_message_id);
+    """,
+    """
+    -- Branching follow-ups, many-to-many: a follow-up variant is sent to leads who got any of its
+    -- linked variants of the previous step. A variant without links goes to "everyone else"
+    -- (leads whose previous variant has no linked follow-up). Replaces variants.after_variant_id,
+    -- which is left in place but no longer used.
+    CREATE TABLE variant_links (
+        variant_id INTEGER NOT NULL REFERENCES variants(id) ON DELETE CASCADE,
+        parent_id INTEGER NOT NULL REFERENCES variants(id) ON DELETE CASCADE,
+        PRIMARY KEY (variant_id, parent_id)
+    );
+    CREATE INDEX variant_links_parent ON variant_links(parent_id);
+    INSERT INTO variant_links (variant_id, parent_id)
+        SELECT id, after_variant_id FROM variants WHERE after_variant_id IS NOT NULL;
+    UPDATE variants SET after_variant_id = NULL;
+    """,
+    """
+    -- AI personalization (optional, see outreach_wise/ai/). A playbook is stored as its full
+    -- .playbook.md text: TOML settings between +++ lines, then Markdown instructions.
+    CREATE TABLE playbooks (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        source TEXT NOT NULL,
+        builtin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+
+    -- Public data fetched for a lead (YouTube channel, web page), shared by all playbooks.
+    CREATE TABLE lead_research (
+        lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        source TEXT NOT NULL,
+        input TEXT NOT NULL,
+        data TEXT,
+        error TEXT,
+        fetched_at TEXT NOT NULL,
+        PRIMARY KEY (lead_id, source, input)
+    );
+
+    -- What a playbook wrote for a lead. One row per (lead, playbook): reused by every campaign
+    -- that uses the same playbook.
+    -- status: pending | researching | needs_review | approved | skipped | failed
+    CREATE TABLE ai_fields (
+        id INTEGER PRIMARY KEY,
+        lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        playbook_id INTEGER NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+        status TEXT NOT NULL DEFAULT 'pending',
+        vals TEXT NOT NULL DEFAULT '{}',
+        original_vals TEXT,
+        alternatives TEXT NOT NULL DEFAULT '{}',
+        evidence TEXT NOT NULL DEFAULT '[]',
+        notes TEXT,
+        skip_reason TEXT,
+        checks TEXT NOT NULL DEFAULT '[]',
+        error TEXT,
+        attempts INTEGER NOT NULL DEFAULT 0,
+        regenerate_note TEXT,
+        playbook_hash TEXT,
+        provider TEXT,
+        model TEXT,
+        usage TEXT,
+        cost_usd REAL NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        generated_at TEXT,
+        reviewed_at TEXT,
+        UNIQUE (lead_id, playbook_id)
+    );
+    CREATE INDEX ai_fields_status ON ai_fields(status);
+
+    -- Reviewer edits (before -> after), fed back to the playbook as examples.
+    CREATE TABLE ai_examples (
+        id INTEGER PRIMARY KEY,
+        playbook_id INTEGER NOT NULL REFERENCES playbooks(id) ON DELETE CASCADE,
+        field TEXT NOT NULL,
+        before TEXT NOT NULL,
+        after TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    );
+
+    ALTER TABLE campaigns ADD COLUMN playbook_id INTEGER REFERENCES playbooks(id) ON DELETE SET NULL;
+    ALTER TABLE campaigns ADD COLUMN require_approval INTEGER NOT NULL DEFAULT 1;
+    -- The variant chosen ahead of time for step `pinned_step`, so we know before sending
+    -- whether this lead needs AI fields at all.
+    ALTER TABLE enrollments ADD COLUMN pinned_variant_id INTEGER REFERENCES variants(id) ON DELETE SET NULL;
+    ALTER TABLE enrollments ADD COLUMN pinned_step INTEGER;
+    """,
+    """
+    -- Editable A/B splits. A lead's share of each option is weight / sum of the options' weights:
+    -- variants.weight for the first email and "everyone else" follow-ups, variant_links.weight
+    -- for a follow-up connected to a specific previous variant (so one follow-up can take 30%
+    -- of A's leads and 90% of B's). Equal weights = even split.
+    ALTER TABLE variants ADD COLUMN weight INTEGER NOT NULL DEFAULT 100;
+    ALTER TABLE variant_links ADD COLUMN weight INTEGER NOT NULL DEFAULT 100;
+    """,
 ]
 
 DEFAULT_SETTINGS = {
@@ -224,6 +354,11 @@ def migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for number, sql in enumerate(MIGRATIONS[version:], start=version + 1):
         conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;")
+    if version < 2 <= len(MIGRATIONS):
+        from . import library  # noqa: PLC0415 — avoid an import cycle
+
+        library.seed(conn)
+        conn.commit()
 
 
 def init_db(path: str) -> None:
