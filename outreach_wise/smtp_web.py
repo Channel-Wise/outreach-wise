@@ -4,15 +4,18 @@
   POST /accounts/smtp/test                log in to SMTP and IMAP with the form's values (JSON)
   POST /accounts/smtp                     test again, then save (create or update by email)
   POST /deliverability/check              run the weekly SPF / DKIM / DMARC check now
+  GET  /accounts/microsoft/connect        sign in with Microsoft 365 / Outlook.com (OAuth)
+  GET  /oauth/microsoft/callback          ...and back: test SMTP + IMAP, then save
 
 Registered from web.create_app; the password is never sent back to the browser.
 """
 
+import secrets
 import sqlite3
 
-from flask import Flask, flash, g, jsonify, redirect, request, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, request, session, url_for
 
-from . import autoconfig, db, deliverability
+from . import autoconfig, db, deliverability, microsoft
 from .config import Config
 from .security import encrypt
 from .transports import AuthError, MailboxConfig, SmtpImapTransport, TransportError
@@ -99,7 +102,16 @@ def _hint(config: MailboxConfig) -> str:
     return "Check the username and password; many providers require an app password."
 
 
+MICROSOFT_SMTP_HINT = (
+    "Microsoft refused SMTP for this mailbox. An admin must allow it: Microsoft 365 admin center → "
+    "Users → the user → Mail → Manage email apps → Authenticated SMTP (and SMTP AUTH must not be "
+    "disabled for the organization)."
+)
+
+
 def register(app: Flask, cfg: Config) -> None:
+    microsoft.configure(cfg)
+
     def conn() -> sqlite3.Connection:
         if "db" not in g:
             g.db = db.connect(cfg.database_path)
@@ -182,3 +194,83 @@ def register(app: Flask, cfg: Config) -> None:
             "success" if not problems else "error",
         )
         return redirect(url_for("settings_page") + "#domain-health")
+
+    @app.get("/accounts/microsoft/connect")
+    def microsoft_connect():
+        if not cfg.microsoft_configured:
+            flash(
+                "Set MICROSOFT_CLIENT_ID and MICROSOFT_CLIENT_SECRET first (README → Microsoft setup).",
+                "error",
+            )
+            return redirect(url_for("settings_page") + "#inboxes")
+        session["ms_oauth_state"] = secrets.token_urlsafe(24)
+        return redirect(microsoft.client().auth_url(session["ms_oauth_state"], request.args.get("email", "")))
+
+    @app.get("/oauth/microsoft/callback")
+    def microsoft_callback():
+        expected = session.pop("ms_oauth_state", None)
+        if not expected or not secrets.compare_digest(request.args.get("state", ""), expected):
+            abort(400, "OAuth state mismatch. Start the connection again.")
+        back = redirect(url_for("settings_page") + "#inboxes")
+        if request.args.get("error"):
+            flash(
+                f"Microsoft sign-in cancelled: {request.args.get('error_description') or request.args['error']}",
+                "error",
+            )
+            return back
+        c = conn()
+        try:
+            result = microsoft.client().exchange_code(request.args.get("code", ""))
+        except microsoft.MicrosoftError as err:
+            flash(str(err), "error")
+            return back
+        existing = c.execute("SELECT transport FROM accounts WHERE email = ?", (result["email"],)).fetchone()
+        if existing and existing["transport"] == "gmail_api":
+            flash(f"{result['email']} is already connected with Google. Remove it first.", "error")
+            return back
+        refresh = result["refresh_token"]
+        transport = SmtpImapTransport(
+            MailboxConfig(
+                email=result["email"],
+                username=result["email"],
+                password="",
+                smtp_host=microsoft.SMTP_HOST,
+                smtp_port=microsoft.SMTP_PORT,
+                imap_host=microsoft.IMAP_HOST,
+                imap_port=microsoft.IMAP_PORT,
+                access_token=lambda: microsoft.client().access_token(refresh),
+                timeout=15,
+            )
+        )
+        for step, check in (("SMTP", transport.check_smtp), ("IMAP", transport.check_imap)):
+            try:
+                check()
+            except (AuthError, TransportError, OSError) as err:
+                hint = MICROSOFT_SMTP_HINT if step == "SMTP" and isinstance(err, AuthError) else ""
+                flash(f"Signed in, but {step} login failed: {err}. {hint}".strip(), "error")
+                return back
+        c.execute(
+            """
+            INSERT INTO accounts (email, refresh_token, transport, smtp_host, smtp_port, smtp_security,
+                                  imap_host, imap_port, imap_security, daily_limit, created_at)
+            VALUES (?, ?, 'microsoft', ?, ?, 'starttls', ?, ?, 'ssl', ?, ?)
+            ON CONFLICT(email) DO UPDATE SET refresh_token = excluded.refresh_token, transport = 'microsoft',
+                secret = NULL, smtp_host = excluded.smtp_host, smtp_port = excluded.smtp_port,
+                smtp_security = 'starttls', imap_host = excluded.imap_host, imap_port = excluded.imap_port,
+                imap_security = 'ssl', enabled = 1, last_error = NULL
+            """,
+            (
+                result["email"],
+                encrypt(cfg.secret_key, refresh),
+                microsoft.SMTP_HOST,
+                microsoft.SMTP_PORT,
+                microsoft.IMAP_HOST,
+                microsoft.IMAP_PORT,
+                db.get_settings(c)["daily_limit"],
+                db.iso(db.now()),
+            ),
+        )
+        db.log_event(c, "account", f"Connected inbox {result['email']} with Microsoft sign-in")
+        c.commit()
+        flash(f"Connected {result['email']}.", "success")
+        return back
