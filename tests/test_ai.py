@@ -288,6 +288,9 @@ def test_checks_flag_problems():
     assert any(not c["ok"] and "120K" in c["text"] for c in found)
     email = checks.email_checks(pb, "Hi", "Go to example.com and www.other.io now")
     assert any(not c["ok"] and "2 links" in c["text"] for c in email)
+    assert any(c["text"].startswith("Email ") for c in email)
+    follow_up = checks.email_checks(pb, "", "One short follow-up line.", first=False)
+    assert not any(c["text"].startswith("Email ") for c in follow_up)  # length is for the first email
 
 
 # --- sources and providers ------------------------------------------------------------------
@@ -481,6 +484,24 @@ def test_campaign_page_leads_to_review(client, conn, cfg, ai_on, playbook_id):
     assert f"/review?campaign={campaign_id}&amp;status=needs_review&amp;id={ai_id}" in page  # per-lead link
     review = client.get(f"/review?campaign={campaign_id}&id={ai_id}").get_data(as_text=True)
     assert f'href="/campaigns/{campaign_id}"' in review  # back to the campaign
+
+
+def test_cost_and_fields_are_visible(client, conn, cfg, ai_on, playbook_id):
+    campaign_id = ai_campaign(conn, playbook_id, leads=1)
+    scheduler.plan(conn, ai_on)
+    scheduler.run(conn, cfg, ai_on, provider=FakeProvider())
+    row = conn.execute("SELECT id, lead_id FROM ai_fields").fetchone()
+    conn.execute("UPDATE ai_fields SET cost_usd = 0.25, model = 'claude-opus-5-5', provider = 'claude_code'")
+    conn.commit()
+
+    review = client.get(f"/review?campaign={campaign_id}&id={row['id']}").get_data(as_text=True)
+    assert "≈ $0.250" in review and "Claude Code reports" in review
+    assert "≈ $0.25 spent on AI fields for this campaign" in review
+    assert "≈ $0.25 so far" in client.get(f"/campaigns/{campaign_id}").get_data(as_text=True)
+
+    lead = client.get(f"/leads/{row['lead_id']}").get_data(as_text=True)
+    assert 'id="ai-fields"' in lead and "ai_hook" in lead and "Your Tezgah series stood out." in lead
+    assert f"id={row['id']}" in lead  # opens the lead in review
 
 
 def test_editor_form_saves_a_valid_playbook(client, conn, ai_on):

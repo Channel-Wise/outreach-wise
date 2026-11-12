@@ -38,6 +38,24 @@
       {% else %}<div class="empty" style="padding:20px"><p>No emails yet.</p></div>{% endif %}
     </div>
 
+    {% set ai_rows = ai_lead(lead.id) if ai_lead is defined else [] %}
+    {% if ai_rows %}
+    <div class="card" id="ai-fields">
+      <div class="card-head"><h2>AI fields</h2></div>
+      {% for a in ai_rows %}{% set r = a.row %}
+      <div class="ai-lead">
+        <div class="row"><strong>{{ r.playbook_name }}</strong>{{ badge(a.status, a.label | lower) }}<span class="spacer"></span><a class="small" href="{{ url_for('review', status=a.status, id=r.id) }}">Open in review →</a></div>
+        {% if r.status == "skipped" %}<p class="muted small">Skipped: {{ r.skip_reason }}</p>{% elif r.status == "failed" %}<p class="small" style="color:var(--bad)">{{ r.error }}</p>{% endif %}
+        {% if a.vals %}
+        <table class="table"><tbody>
+          {% for name, value in a.vals %}<tr><td class="muted mono" style="width:22%">ai_{{ name }}</td><td style="word-break:break-word">{{ value or "—" }}</td></tr>{% endfor %}
+        </tbody></table>
+        {% endif %}
+        {% if r.model %}<p class="meta">{{ r.model }} via {{ "Claude Code" if r.provider == "claude_code" else "Anthropic API" }} · ≈ ${{ '%.3f' % (r.cost_usd or 0) }} · {{ r.generated_at | local }}{% if r.reviewed_at %} · reviewed {{ r.reviewed_at | local }}{% endif %}</p>{% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% endif %}
     <div class="card">
       <div class="card-head"><h2>Inbound</h2></div>
       {% if inbound_rows %}

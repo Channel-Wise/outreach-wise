@@ -716,6 +716,12 @@ kbd { font: 11px var(--mono); padding: 0 5px; border: 1px solid currentColor; bo
 .ai-legend a:hover { color: var(--text); text-decoration: underline; }
 .ai-legend i { display: inline-block; width: 9px; height: 9px; border-radius: 2px; margin-right: 5px; }
 .ext svg, .btn svg, .subhead svg { width: 14px; height: 14px; vertical-align: -2px; }
+.cost-big { font-size: 22px; font-weight: 600; margin: 0; }
+.table.compact td { padding: 5px 0; font-size: 12.5px; border: 0; vertical-align: top; }
+.table.compact td:first-child { width: 84px; }
+.ai-lead + .ai-lead { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
+.ai-lead .table { margin: 8px 0 6px; }
+.ai-lead .meta { color: var(--muted); font-size: 12.5px; margin: 0; }
 
 /* Settings → Inboxes: add an SMTP/IMAP inbox (templates/_smtp_inbox.html) */
 .smtp-add { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }

@@ -35,7 +35,7 @@
 {% if ai.enabled and ai.playbook %}
 <section class="card" style="margin-bottom:16px">
   <div class="row" style="justify-content:space-between">
-    <div><h2>AI personalization</h2><p class="muted small" style="margin:2px 0 0">Playbook: {{ ai.playbook.name }} · {{ "emails wait for your approval" if campaign.require_approval else "drafts are sent without review" }}</p></div>
+    <div><h2>AI personalization</h2><p class="muted small" style="margin:2px 0 0">Playbook: {{ ai.playbook.name }} · {{ "emails wait for your approval" if campaign.require_approval else "drafts are sent without review" }}{% if ai.cost %} · ≈ ${{ '%.2f' % ai.cost }} so far{% endif %}</p></div>
     {% if ai.counts.needs_review %}<a class="btn primary sm" href="{{ url_for('review', campaign=campaign.id) }}">{{ icon("review") }}Review {{ ai.counts.needs_review }} email{{ 's' if ai.counts.needs_review != 1 }}</a>
     {% else %}<a class="small" href="{{ url_for('review', campaign=campaign.id, status='approved') }}">Open review →</a>{% endif %}
   </div>
