@@ -55,7 +55,10 @@ def get(conn: sqlite3.Connection, campaign_id: int) -> sqlite3.Row | None:
 
 
 def create(conn: sqlite3.Connection, name: str) -> int:
-    cur = conn.execute("INSERT INTO campaigns (name, created_at) VALUES (?, ?)", (name, db.iso(db.now())))
+    cur = conn.execute(
+        "INSERT INTO campaigns (name, created_at, require_approval) VALUES (?, ?, ?)",
+        (name, db.iso(db.now()), int(db.get_settings(conn)["ai_require_approval"])),
+    )
     campaign_id = cur.lastrowid
     add_step(conn, campaign_id, delay_days=0, subject=FIRST_SUBJECT, body=FIRST_BODY)
     add_step(conn, campaign_id, delay_days=3)
@@ -569,9 +572,43 @@ def _verdict(variants: list[dict]) -> str:
 # --- preview & approval ---------------------------------------------------------------------
 
 
+def annotate_routing(steps: list[dict]) -> None:
+    """Who gets each email, for the preview page.
+
+    Adds to every variant `routes`: [{"after": previous label or None, "pct": share, "linked": bool}]
+    (one entry per previous variant whose leads can get it; "after" None = new leads, first email)
+    and `unreached`; adds to every step `uncovered`: previous labels whose leads end here.
+    """
+    previous: list[dict] | None = None
+    for step in steps:
+        for v in step["variants"]:
+            v["routes"], v["unreached"] = [], False
+        step["uncovered"] = []
+        parents = [None] if previous is None else [p for p in previous if p["active"]]
+        for parent in parents:
+            pairs = split(step, parent["id"] if parent else None)
+            if not pairs:
+                step["uncovered"].append(parent["label"])
+                continue
+            for (v, _), pct in zip(pairs, _percents([w for _, w in pairs]), strict=True):
+                v["routes"].append(
+                    {
+                        "after": parent["label"] if parent else None,
+                        "pct": pct,
+                        "linked": parent is not None and parent["id"] in v["parents"],
+                    }
+                )
+        if previous is not None:
+            for v in step["variants"]:
+                v["unreached"] = bool(v["active"] and not v["routes"])
+        step["multi_previous"] = previous is not None and len(previous) > 1
+        previous = step["variants"]
+
+
 def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str, sample: int = 3) -> dict:
     """Render every variant for a few real leads, and count leads with missing variables."""
     steps = steps_with_variants(conn, campaign_id)
+    annotate_routing(steps)
     enrolled = conn.execute(
         "SELECT l.* FROM enrollments e JOIN leads l ON l.id = e.lead_id"
         " WHERE e.campaign_id = ? AND e.status = 'active' ORDER BY e.id",
@@ -586,11 +623,12 @@ def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str
     )
 
     first_subject = steps[0]["variants"][0]["subject"] if steps else ""
+    playbook_id = conn.execute("SELECT playbook_id FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()[0]
     for step in steps:
         for variant in step["variants"]:
             variant["renders"] = []
             for lead in sample_leads:
-                variables = lead_variables(cfg, lead)
+                variables = {**lead_variables(cfg, lead), **ai_preview_values(conn, playbook_id, lead["id"])}
                 try:
                     subject_template = variant["subject"] or reply_subject(first_subject)
                     rendered = {
@@ -609,6 +647,7 @@ def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str
             if variant["active"]:
                 required |= required_variables(variant["subject"] + variant["body"] + footer)
     required -= {"email", "unsubscribe_url"}
+    required = {name for name in required if not name.startswith("ai_")}  # written by the playbook
     missing: dict[str, int] = {}
     affected = 0
     for lead in enrolled:
@@ -631,7 +670,49 @@ def go_live_blockers(conn: sqlite3.Connection, campaign_id: int) -> list[str]:
     ).fetchall()
     if not first or any(not row["subject"].strip() for row in first):
         blockers.append("Every variant of the first email needs a subject.")
+    blockers += ai_blockers(conn, campaign_id)
     return blockers
+
+
+def ai_preview_values(conn: sqlite3.Connection, playbook_id: int | None, lead_id: int) -> dict:
+    """ai_* values for previews: what the playbook wrote, or a visible placeholder."""
+    if not playbook_id:
+        return {}
+    from .ai.playbooks import load  # noqa: PLC0415
+
+    playbook = load(conn, playbook_id)
+    if not playbook:
+        return {}
+    row = conn.execute(
+        "SELECT status, vals FROM ai_fields WHERE lead_id = ? AND playbook_id = ?", (lead_id, playbook_id)
+    ).fetchone()
+    vals = json.loads(row["vals"]) if row and row["status"] in ("approved", "needs_review") else {}
+    state = row["status"].replace("_", " ") if row else "not written yet"
+    return {f.variable: vals.get(f.name) or f"[{f.variable}: {state}]" for f in playbook.fields}
+
+
+def ai_blockers(conn: sqlite3.Connection, campaign_id: int) -> list[str]:
+    from .ai.playbooks import ai_fields_used, load  # noqa: PLC0415
+
+    used: set[str] = set()
+    for row in conn.execute(
+        "SELECT v.subject, v.body FROM variants v JOIN steps s ON s.id = v.step_id"
+        " WHERE s.campaign_id = ? AND v.active = 1",
+        (campaign_id,),
+    ):
+        used |= ai_fields_used(row["subject"] + row["body"])
+    if not used:
+        return []
+    playbook_id = conn.execute("SELECT playbook_id FROM campaigns WHERE id = ?", (campaign_id,)).fetchone()[0]
+    playbook = load(conn, playbook_id)
+    if not playbook:
+        return ["The emails use AI fields ({{ai_…}}). Pick a playbook in the campaign settings."]
+    unknown = sorted(used - {f.name for f in playbook.fields})
+    if unknown:
+        return [f'The playbook "{playbook.name}" doesn\'t write ai_{unknown[0]}.']
+    if not db.get_settings(conn)["ai_enabled"]:
+        return ["Turn on AI personalization in Settings."]
+    return []
 
 
 def go_live(conn: sqlite3.Connection, campaign_id: int) -> int:
@@ -640,7 +721,8 @@ def go_live(conn: sqlite3.Connection, campaign_id: int) -> int:
     conn.execute("DELETE FROM messages WHERE campaign_id = ? AND mode = 'dry_run'", (campaign_id,))
     cur = conn.execute(
         "UPDATE enrollments SET status = 'active', next_step = 1, next_send_at = ?, account_id = NULL,"
-        " thread_id = NULL, last_message_id = NULL, last_subject = NULL, stop_reason = NULL, updated_at = ?"
+        " thread_id = NULL, last_message_id = NULL, last_subject = NULL, stop_reason = NULL,"
+        " pinned_variant_id = NULL, pinned_step = NULL, updated_at = ?"
         " WHERE campaign_id = ? AND status IN ('active', 'completed', 'stopped')",
         (stamp, stamp, campaign_id),
     )

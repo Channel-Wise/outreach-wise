@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, csrf with context %}
+{% block title %}Playbooks{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Playbooks</h1><p>A playbook tells the AI how to research a lead and which parts of the email to write. Pick one in a campaign's settings to use its fields.</p></div>
+  <div class="actions">
+    <form method="post" action="{{ url_for('playbook_import') }}" enctype="multipart/form-data" class="inline" id="import-form">{{ csrf() }}
+      <label class="btn">{{ icon("upload") }}Import .playbook.md<input type="file" name="file" accept=".md,.txt,text/markdown" hidden onchange="this.form.submit()"></label>
+    </form>
+    <a class="btn primary" href="{{ url_for('playbook_new') }}">{{ icon("plus") }}New playbook</a>
+  </div>
+</div>
+
+<div class="pb-grid">
+  {% for p in playbooks %}
+  <article class="card pb-card">
+    <div class="row" style="justify-content:space-between;align-items:flex-start">
+      <div><h3>{{ p.name }}</h3><p class="muted small" style="margin:2px 0 0">{{ "Example · ships with Outreach Wise" if p.builtin else "Edited " ~ (p.updated_at | local("%b %d")) }}</p></div>
+      {% if p.error %}<span class="badge bad">error</span>
+      {% elif p.campaigns %}<span class="badge good">{{ p.campaigns }} campaign{{ 's' if p.campaigns != 1 }}</span>
+      {% elif p.builtin %}<span class="badge">Example</span>{% endif %}
+    </div>
+    {% if p.parsed %}
+    <dl>
+      <dt>Input</dt><dd><span class="tok">{{ p.parsed.input_column }}</span>{% for s in p.parsed.sources %}<span class="muted small">· {{ sources[s] }}</span>{% endfor %}</dd>
+      <dt>Writes</dt><dd>{% for v in p.parsed.variables %}<span class="tok">{{ v }}</span>{% endfor %}</dd>
+      {% if not p.builtin %}<dt>Approved</dt><dd>{{ p.approved }} lead{{ 's' if p.approved != 1 }}</dd>{% endif %}
+    </dl>
+    {% else %}
+      <p class="small" style="color:var(--bad)">{{ p.error }}</p>
+    {% endif %}
+    <div class="foot">
+      <a class="btn sm ghost" href="{{ url_for('playbook_export', playbook_id=p.id) }}">{{ icon("download") }}Export</a>
+      {% if p.builtin %}
+        <form method="post" action="{{ url_for('playbook_create') }}" class="inline">{{ csrf() }}<input type="hidden" name="start" value="example"><input type="hidden" name="example_id" value="{{ p.id }}"><button class="btn sm">{{ icon("copy") }}Duplicate</button></form>
+      {% else %}
+        <a class="btn sm" href="{{ url_for('playbook_edit', playbook_id=p.id) }}">Edit</a>
+      {% endif %}
+    </div>
+  </article>
+  {% endfor %}
+  <a class="card pb-new" href="{{ url_for('playbook_new') }}">
+    <span class="badge accent plain">{{ icon("plus") }}</span>
+    <strong>New playbook</strong>
+    <span class="muted small">From an example, from your own outreach guide, or blank.</span>
+  </a>
+</div>
+
+<section class="card">
+  <div class="cols-even">
+    <div>
+      <h2>One file per playbook</h2>
+      <p class="secondary">Export one to share it on GitHub, or import someone else's. The block between the <code>+++</code> lines is the settings; everything under it is the instructions the AI follows.</p>
+      <ul class="small">
+        <li><strong>input</strong>: the lead column the AI starts from, and which sources to fetch.</li>
+        <li><strong>fields</strong>: what it writes. Each one becomes a variable like <span class="tok">ai_hook</span>.</li>
+        <li><strong>checks</strong>: rules checked automatically before you review (length, banned phrases, links).</li>
+        <li><strong>Instructions</strong>: plain Markdown. Your guide, rules and example emails.</li>
+      </ul>
+    </div>
+<pre class="pb-file">+++
+name = "YouTube creators"
+language = "auto"
+
+[input]
+column = "channel_url"
+sources = ["youtube_channel"]
+
+[fields.hook]
+describe = "One concrete thing from their channel"
+max_words = 60
+
+[fields.subject]
+describe = "Personal, tied to the hook"
+alternatives = 3
+
+[checks]
+email_words = [60, 150]
+banned = ["quick question"]
++++
+
+# Instructions
+Write to YouTube creators about …</pre>
+  </div>
+</section>
+{% endblock %}

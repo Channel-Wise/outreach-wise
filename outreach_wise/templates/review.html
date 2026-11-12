@@ -1,0 +1,117 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, csrf with context %}
+{% block title %}Review{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div><h1>Review</h1><p>Check what the AI wrote before it's sent. Your edits are saved as examples for the playbook.</p></div>
+  <form method="get" action="{{ url_for('review') }}" class="row">
+    <input type="hidden" name="status" value="{{ status }}">
+    <select name="campaign" aria-label="Campaign" onchange="this.form.submit()">
+      <option value="">All campaigns</option>
+      {% for c in campaign_list %}<option value="{{ c.id }}" {{ 'selected' if campaign_id == c.id }}>{{ c.name }}</option>{% endfor %}
+    </select>
+  </form>
+</div>
+
+<nav class="tabs" aria-label="Status">
+  {% for s, label in labels.items() %}
+    <a href="{{ url_for('review', status=s, campaign=campaign_id or None) }}" aria-selected="{{ 'true' if s == status else 'false' }}">{{ label }} <span class="count">{{ counts[s] }}</span></a>
+  {% endfor %}
+</nav>
+
+{% if not items %}
+  <div class="card empty">
+    <h3>{{ "Nothing waiting for you" if status == "needs_review" else "Nothing here" }}</h3>
+    <p>{% if status == "needs_review" %}AI fields are written for leads enrolled in a campaign that uses a playbook, about {{ settings.ai_lookahead_hours }} hours before each email is due. They show up here when they're ready.{% else %}No leads in this state.{% endif %}</p>
+  </div>
+{% else %}
+<div class="review-cols">
+  <nav class="card review-list" aria-label="Leads">
+    {% for i in items %}
+      {% set lf = i.lead_fields | fields %}
+      <a class="review-item {{ 'active' if selected and selected.row.id == i.id }}" href="{{ url_for('review', status=status, campaign=campaign_id or None, id=i.id) }}">
+        <span class="t">{{ lf.get('channel_name') or lf.get('name') or i.email }}
+          {% if i.notes %}<span class="badge warn">note</span>{% elif i.status == 'needs_review' %}<span class="badge good">clean</span>{% endif %}</span>
+        <span class="muted small">{{ i.email }}{% if i.status == 'skipped' %} · {{ i.skip_reason }}{% elif i.status == 'failed' %} · {{ i.error }}{% endif %}</span>
+      </a>
+    {% endfor %}
+    {% if status == "needs_review" and clean %}
+      <form method="post" action="{{ url_for('review_approve_clean') }}" style="padding:8px 10px">{{ csrf() }}
+        <input type="hidden" name="status" value="{{ status }}"><input type="hidden" name="campaign" value="{{ campaign_id or '' }}">
+        <button class="btn sm" onclick="return confirm('Approve every draft that passed all its checks, without opening them?')">Approve all that pass every check</button>
+      </form>
+    {% endif %}
+  </nav>
+
+  {% if selected %}
+  {% set r = selected.row %}
+  <div class="review-main">
+    <form class="card" method="post" action="{{ url_for('review_approve', ai_id=r.id) }}" id="review-form">{{ csrf() }}
+      <input type="hidden" name="status" value="{{ status }}"><input type="hidden" name="campaign" value="{{ campaign_id or '' }}">
+      <div class="row" style="justify-content:space-between;margin-bottom:12px">
+        <div>
+          <h2>{{ selected.lead.get('channel_name') or selected.lead.get('name') or r.email }}</h2>
+          <p class="muted small" style="margin:2px 0 0">{{ r.email }} · {{ r.playbook_name }}{% if selected.playbook and selected.lead.get(selected.playbook.input_column) %} · <a href="{{ selected.lead.get(selected.playbook.input_column) if selected.lead.get(selected.playbook.input_column).startswith('http') else 'https://' ~ selected.lead.get(selected.playbook.input_column) }}" target="_blank" rel="noopener" class="ext">{{ selected.lead.get(selected.playbook.input_column) }} {{ icon("external") }}</a>{% endif %}</p>
+        </div>
+        <div class="row">{{ badge(r.status) }}{% if selected.position %}<span class="muted small">{{ selected.position }} of {{ items | length }}</span>{% endif %}</div>
+      </div>
+
+      {% if r.status == "skipped" %}<div class="banner warn">{{ icon("alert") }}<span class="grow">Skipped: {{ r.skip_reason }}</span></div>{% endif %}
+      {% if r.status == "failed" %}<div class="banner warn">{{ icon("alert") }}<span class="grow">Failed: {{ r.error }}</span></div>{% endif %}
+      {% if selected.stale %}<div class="banner warn">{{ icon("clock") }}<span class="grow">Written {{ r.generated_at | local("%b %d") }}. The channel may have changed since; consider a new draft.</span></div>{% endif %}
+      {% for s in selected.sent_before %}<div class="banner warn">{{ icon("alert") }}<span class="grow">ai_{{ s.field }} was already sent to this person on {{ s.sent_at | local("%b %d") }}. Write a new one so it doesn't read as copy-paste.</span></div>{% endfor %}
+
+      {% if selected.playbook %}
+        {% for f in selected.playbook.fields %}
+        <div class="ai-field">
+          <label for="val_{{ f.name }}">ai_{{ f.name }}{% if f.max_words %} · max {{ f.max_words }} words{% endif %}</label>
+          <textarea id="val_{{ f.name }}" name="val_{{ f.name }}" rows="{{ 2 if (f.max_words or 99) < 15 else 4 }}">{{ selected.vals.get(f.name, '') }}</textarea>
+          {% set alts = selected.alternatives.get(f.name, []) %}
+          {% if alts %}<div class="alts">{% for a in alts %}<button type="button" data-alt="{{ a }}" data-field="{{ f.name }}">{{ a }}</button>{% endfor %}</div>{% endif %}
+        </div>
+        {% endfor %}
+      {% endif %}
+
+      {% if selected.email %}
+        <h3 class="subhead">How the email reads ({{ selected.email.campaign }}, step {{ selected.email.step }}{{ selected.email.label }})</h3>
+        {% if selected.email.error %}
+          <div class="mail error"><pre class="mail-body">{{ selected.email.error }}</pre></div>
+        {% else %}
+          <div class="mail"><div class="mail-head"><span class="subject">{{ selected.email.subject }}</span></div><pre class="mail-body">{{ selected.email.body }}</pre></div>
+          <p class="hint">Shown with the saved values. Edits above apply when you approve.</p>
+        {% endif %}
+      {% endif %}
+
+      <div class="review-bar">
+        {% if r.status in ("needs_review", "approved") %}
+          <button class="btn primary" data-key="a">{{ icon("check") }}{{ "Approve & next" if r.status == "needs_review" else "Save changes" }} <kbd>A</kbd></button>
+        {% endif %}
+        <input type="text" name="note" form="regen-form" placeholder="Optional: what to change in a new draft" aria-label="Instruction for a new draft">
+        <button class="btn" form="regen-form" data-key="r">{{ icon("sync") }}{{ "Try again" if r.status == "failed" else "New draft" }} <kbd>R</kbd></button>
+        {% if r.status != "skipped" %}<button class="btn" form="skip-form" data-key="s">Skip lead <kbd>S</kbd></button>{% endif %}
+      </div>
+    </form>
+    <form id="regen-form" method="post" action="{{ url_for('review_regenerate', ai_id=r.id) }}">{{ csrf() }}<input type="hidden" name="status" value="{{ status }}"><input type="hidden" name="campaign" value="{{ campaign_id or '' }}"></form>
+    <form id="skip-form" method="post" action="{{ url_for('review_skip', ai_id=r.id) }}">{{ csrf() }}<input type="hidden" name="status" value="{{ status }}"><input type="hidden" name="campaign" value="{{ campaign_id or '' }}"></form>
+  </div>
+
+  <div class="review-side stack">
+    {% if r.notes %}<section class="card" style="background:var(--warn-soft);border-color:transparent"><h3 class="subhead" style="margin-top:0;color:var(--warn)">Note for you</h3><p style="margin:0">{{ r.notes }}</p></section>{% endif %}
+    {% if selected.evidence %}
+    <section class="card"><h3 class="subhead" style="margin-top:0">Where each claim came from</h3>
+      <ul class="evidence">{% for e in selected.evidence %}<li><strong>{{ e.claim }}</strong><br><span class="muted">{{ e.source }}</span></li>{% endfor %}</ul>
+    </section>
+    {% endif %}
+    {% set all_checks = selected.checks + (selected.email.checks if selected.email and selected.email.checks else []) %}
+    {% if all_checks %}
+    <section class="card"><h3 class="subhead" style="margin-top:0">Checks</h3>
+      <ul class="check-list">{% for c in all_checks %}<li class="{{ '' if c.ok else 'bad' }}">{{ c.text }}</li>{% endfor %}</ul>
+    </section>
+    {% endif %}
+    {% if r.model %}<p class="muted small">Written by {{ r.model }} · {{ r.generated_at | local }} · ≈ ${{ '%.3f' % r.cost_usd }}</p>{% endif %}
+  </div>
+  {% endif %}
+</div>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='ai.js') }}"></script>{% endblock %}

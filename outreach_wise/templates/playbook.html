@@ -1,0 +1,121 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, csrf with context %}
+{% block title %}{{ pb.name if pb else "Playbook" }}{% endblock %}
+{% macro field_row(f=None) -%}
+<div class="field-row">
+  <input type="text" name="f_name" value="{{ f.name if f else '' }}" placeholder="hook" aria-label="Field name" pattern="[a-z][a-z0-9_]*">
+  <textarea name="f_describe" rows="1" aria-label="What to write" placeholder="What the AI writes here">{{ f.describe if f else '' }}</textarea>
+  <input type="number" name="f_max_words" value="{{ f.max_words or '' if f else '' }}" min="1" placeholder="—" aria-label="Max words">
+  <input type="text" name="f_fallback" value="{{ f.fallback or '' if f else '' }}" placeholder="Skip the lead" aria-label="If it can't be written">
+  <input type="number" name="f_alternatives" value="{{ f.alternatives if f else 0 }}" min="0" max="8" aria-label="Alternatives">
+  <button type="button" class="btn sm ghost" data-remove-field aria-label="Remove field">{{ icon("close") }}</button>
+</div>
+{%- endmacro %}
+{% block content %}
+{% set readonly = row and row.builtin %}
+<form method="post" action="{{ url_for('playbook_save') }}" id="pb-form">{{ csrf() }}
+<input type="hidden" name="playbook_id" value="{{ row.id if row and not row.builtin else '' }}">
+<input type="hidden" name="mode" value="{{ 'form' if pb else 'raw' }}" id="pb-mode">
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('playbook_list') }}">← Playbooks</a></p>
+    <h1>{{ pb.name if pb else "Playbook" }}</h1>
+    <p class="row" style="gap:6px">
+      {% if not row %}<span class="badge warn">Not saved yet</span>{% elif readonly %}<span class="badge">Example (read-only, save makes a copy)</span>{% endif %}
+      {% if examples %}<span class="badge accent">{{ examples }} reviewer edit{{ 's' if examples != 1 }} used as examples</span>{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    {% if row %}<a class="btn ghost" href="{{ url_for('playbook_export', playbook_id=row.id) }}">{{ icon("download") }}Export</a>{% endif %}
+    <button class="btn primary">{{ "Save as my playbook" if readonly or not row else "Save playbook" }}</button>
+  </div>
+</div>
+{% if error %}<div class="flash error">{{ icon("alert") }}<span>{{ error }}</span></div>{% endif %}
+
+<nav class="tabs" role="tablist" aria-label="Editor view">
+  <a href="#form" role="tab" data-view="form" aria-selected="{{ 'true' if pb else 'false' }}">Form</a>
+  <a href="#file" role="tab" data-view="raw" aria-selected="{{ 'false' if pb else 'true' }}">Edit as file</a>
+</nav>
+
+<div class="editor-cols">
+  <div class="editor-main">
+    <div id="view-form" {{ 'hidden' if not pb }}>
+    {% if pb %}
+      <section class="card" style="margin-bottom:14px">
+        <div class="sec-head"><span class="sec-num">1</span><div><h2>Where the AI starts</h2><p>The lead column it reads, and what it fetches from there.</p></div></div>
+        <div class="fields-3">
+          <div class="field"><label for="name">Name</label><input id="name" type="text" name="name" value="{{ pb.name }}" maxlength="120" required></div>
+          <div class="field"><label for="input_column">Input column</label>
+            <input id="input_column" type="text" name="input_column" value="{{ pb.input_column }}" list="columns" required>
+            <datalist id="columns">{% for c in columns %}<option value="{{ c }}"></option>{% endfor %}</datalist></div>
+          <div class="field"><label for="language">Write in</label><input id="language" type="text" name="language" value="{{ pb.language }}" placeholder="auto"><div class="hint"><code>auto</code> = the lead's own language</div></div>
+        </div>
+        <div class="row" style="align-items:stretch">
+          {% for key, label in sources.items() %}
+          <label class="source-opt"><input type="checkbox" name="sources" value="{{ key }}" {{ 'checked' if key in pb.sources }}>
+            <span><strong>{{ label }}</strong><br><span class="hint">{{ "Channel info and the latest 50 videos (titles, descriptions, views, age). Needs a YouTube API key." if key == "youtube_channel" else "The text of the page the input column links to." }}</span></span></label>
+          {% endfor %}
+        </div>
+      </section>
+
+      <section class="card" style="margin-bottom:14px">
+        <div class="sec-head"><span class="sec-num">2</span><div><h2>Instructions</h2><p>Plain Markdown: who you are, product facts, rules, tone and example emails. Sent once per lead and cached.</p></div></div>
+        <textarea name="instructions" rows="18" aria-label="Instructions">{{ pb.instructions }}</textarea>
+      </section>
+
+      <section class="card" style="margin-bottom:14px">
+        <div class="sec-head"><span class="sec-num">3</span><div style="flex:1"><h2>What the AI writes</h2><p>Each field becomes a template variable (<span class="tok">ai_hook</span>). The fixed parts of the email stay in your campaign template.</p></div></div>
+        <div class="field-rows" id="field-rows">
+          <div class="field-row head"><span>Variable (ai_…)</span><span>What to write</span><span>Max words</span><span>If it can't be written</span><span>Options</span><span></span></div>
+          {% for f in pb.fields %}{{ field_row(f) }}{% endfor %}
+        </div>
+        <template id="field-template">{{ field_row() }}</template>
+        <div class="row" style="margin-top:10px;justify-content:space-between">
+          <button type="button" class="btn sm" id="add-field">{{ icon("plus") }}Add field</button>
+          <span class="hint">"If it can't be written": a fallback text (e.g. a neutral greeting), or empty to skip the lead. "Options": extra alternatives you can pick from in review.</span>
+        </div>
+        <p class="hint" style="margin-top:10px">Always included: <strong>evidence</strong> (where each claim came from), <strong>notes for the reviewer</strong>, and a <strong>skip reason</strong> when the lead shouldn't be contacted.</p>
+      </section>
+
+      <section class="card">
+        <div class="sec-head"><span class="sec-num">4</span><div><h2>Automatic checks</h2><p>Run before review. Problems are flagged, not hidden.</p></div></div>
+        <div class="fields-2">
+          <div class="field"><label>Email length (words)</label><div class="row" style="flex-wrap:nowrap"><input type="number" name="email_min" value="{{ pb.checks.email_words[0] if pb.checks.email_words else '' }}" aria-label="Minimum words" style="width:90px"><span class="muted">to</span><input type="number" name="email_max" value="{{ pb.checks.email_words[1] if pb.checks.email_words else '' }}" aria-label="Maximum words" style="width:90px"></div></div>
+          <div class="field"><label>Subject length (words)</label><div class="row" style="flex-wrap:nowrap"><input type="number" name="subject_min" value="{{ pb.checks.subject_words[0] if pb.checks.subject_words else '' }}" aria-label="Minimum subject words" style="width:90px"><span class="muted">to</span><input type="number" name="subject_max" value="{{ pb.checks.subject_words[1] if pb.checks.subject_words else '' }}" aria-label="Maximum subject words" style="width:90px"></div></div>
+        </div>
+        <div class="field"><label for="banned">Banned words and phrases (one per line)</label><textarea id="banned" name="banned" rows="4">{{ pb.checks.banned | join("\n") }}</textarea></div>
+        <label class="check"><input type="checkbox" name="one_link" {{ 'checked' if pb.checks.one_link }}> At most one link in the email</label>
+        <label class="check"><input type="checkbox" name="numbers_in_data" {{ 'checked' if pb.checks.numbers_in_data }}> Every number the AI writes must appear in the fetched data</label>
+      </section>
+    {% endif %}
+    </div>
+
+    <section class="card" id="view-raw" {{ 'hidden' if pb }}>
+      <div class="sec-head"><div><h2>.playbook.md</h2><p>The whole playbook as one file. When you save from this view, this text is used{{ " and the form is ignored" if pb }}.</p></div></div>
+      <textarea name="raw" rows="34" aria-label="Playbook file">{{ source }}</textarea>
+    </section>
+  </div>
+
+  <aside class="editor-side">
+    <section class="card">
+      <div class="row" style="justify-content:space-between;margin-bottom:10px"><h2>Test run</h2><span class="muted small">Nothing is sent or saved</span></div>
+      {% if test_leads %}
+      <div class="field"><label for="lead_id">Lead</label>
+        <select id="lead_id" name="lead_id">{% for l in test_leads %}{% set lf = l.fields | fields %}<option value="{{ l.id }}">{{ lf.get('channel_name') or lf.get('name') or l.email }} · {{ lf.get(pb.input_column, '') if pb else '' }}</option>{% endfor %}</select></div>
+      <div class="row"><button type="button" class="btn primary" id="run-test" data-url="{{ url_for('playbook_test') }}">{{ icon("play") }}Run test</button><span class="muted small" id="test-status"></span></div>
+      {% else %}
+      <p class="muted small">No leads with a value in the input column yet. Sync your sheet, then test here.</p>
+      {% endif %}
+      <div id="test-output" style="margin-top:12px"></div>
+    </section>
+    {% if row and not row.builtin %}
+    <div class="row" style="margin-top:12px;justify-content:flex-end">
+      <button class="btn sm ghost danger-text" form="delete-form" onclick="return confirm('Delete this playbook? Fields it already wrote are deleted too.')">{{ icon("trash") }}Delete playbook</button>
+    </div>
+    {% endif %}
+  </aside>
+</div>
+</form>
+{% if row and not row.builtin %}<form id="delete-form" method="post" action="{{ url_for('playbook_delete', playbook_id=row.id) }}">{{ csrf() }}</form>{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='ai.js') }}"></script>{% endblock %}

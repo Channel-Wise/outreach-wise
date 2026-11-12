@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, csrf with context %}
+{% block title %}New playbook{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('playbook_list') }}">← Playbooks</a></p>
+    <h1>New playbook</h1>
+    <p>Three things make a playbook: where the AI starts, what it should know, and what it writes. You can change everything on the next screen.</p>
+  </div>
+</div>
+
+<form class="card" method="post" action="{{ url_for('playbook_create') }}" enctype="multipart/form-data" style="max-width:760px" id="new-playbook">{{ csrf() }}
+  <h2 style="margin-bottom:12px">How do you want to start?</h2>
+  <div class="start-options">
+    <label class="start-option">
+      <input type="radio" name="start" value="guide" checked>
+      <span style="flex:1;min-width:0">
+        <strong>Draft from my outreach guide</strong>
+        <span class="hint" style="display:block">Upload or paste the guide you already use (PDF, Markdown or text). The AI turns it into instructions, fields and checks. Nothing is saved until you review it.</span>
+        <span class="more">
+          <span class="field"><label for="guide_file">File</label><input id="guide_file" type="file" name="guide_file" accept=".pdf,.md,.txt,text/markdown,application/pdf"></span>
+          <span class="field"><label for="guide_text">…or paste it</label><textarea id="guide_text" name="guide_text" rows="6" placeholder="Paste your guide here"></textarea></span>
+          <span class="field"><label for="name">Name (optional)</label><input id="name" type="text" name="name" maxlength="120" placeholder="e.g. YouTube creators (TR)"></span>
+          <span class="hint">Uses your AI provider once. PDFs need the Anthropic API provider. Lead columns the AI can choose from: {{ columns | join(", ") or "none yet (sync your sheet first)" }}.</span>
+        </span>
+      </span>
+    </label>
+    <label class="start-option">
+      <input type="radio" name="start" value="example">
+      <span style="flex:1;min-width:0">
+        <strong>From an example</strong>
+        <span class="hint" style="display:block">Start from a ready playbook and edit what you need.</span>
+        <span class="more"><select name="example_id" aria-label="Example">{% for e in examples %}<option value="{{ e.id }}">{{ e.name }}</option>{% endfor %}</select></span>
+      </span>
+    </label>
+    <label class="start-option">
+      <input type="radio" name="start" value="blank">
+      <span><strong>Blank</strong><span class="hint" style="display:block">Write the instructions yourself.</span></span>
+    </label>
+  </div>
+  <div class="row" style="justify-content:flex-end">
+    <a class="btn" href="{{ url_for('playbook_list') }}">Cancel</a>
+    <button class="btn primary" id="new-submit">Continue</button>
+  </div>
+</form>
+<script>
+  document.getElementById("new-playbook").addEventListener("submit", (event) => {
+    const button = document.getElementById("new-submit");
+    if (event.target.start.value === "guide") button.textContent = "Drafting… (up to a minute)";
+    button.disabled = true;
+  });
+</script>
+{% endblock %}

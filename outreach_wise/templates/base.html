@@ -22,8 +22,14 @@
         ("suppressions", "Suppressions", "suppressions", ["suppressions"]),
         ("settings_page", "Settings", "settings", ["settings_page"]),
       ] %}
+      {% if settings and settings.ai_enabled %}
+        {% set nav = nav[:4] + [
+          ("playbook_list", "Playbooks", "sparkle", ["playbook_list", "playbook_new", "playbook_create", "playbook_edit", "playbook_save"]),
+          ("review", "Review", "review", ["review"]),
+        ] + nav[4:] %}
+      {% endif %}
       {% for endpoint, label, icon_name, active in nav %}
-        <a href="{{ url_for(endpoint) }}" class="{{ 'active' if request.endpoint in active }}">{{ icon(icon_name) }}{{ label }}</a>
+        <a href="{{ url_for(endpoint) }}" class="{{ 'active' if request.endpoint in active }}">{{ icon(icon_name) }}{{ label }}{% if endpoint == "review" and ai_waiting %}<span class="nav-count">{{ ai_waiting }}</span>{% endif %}</a>
       {% endfor %}
     </nav>
     <div class="sidebar-foot">

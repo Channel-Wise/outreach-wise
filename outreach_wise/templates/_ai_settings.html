@@ -1,0 +1,68 @@
+{% set ai = ai_settings() %}
+<form class="card" id="ai" method="post" action="{{ url_for('ai_settings_save') }}">{{ csrf() }}
+  <div class="card-head">
+    <div><h2>AI personalization</h2><p>Let a playbook research each lead and write parts of the email: a hook, a "why you" line, a subject. Optional and off by default.</p></div>
+    <span class="badge accent plain">{{ icon("sparkle") }}Optional</span>
+  </div>
+
+  <label class="switch-row">
+    <input type="checkbox" name="ai_enabled" {{ 'checked' if settings.ai_enabled }}>
+    <span><strong>Enable AI personalization</strong>
+      <span class="hint">Adds Playbooks and Review to the menu. Turning it off hides them and holds any email waiting for AI fields; nothing is deleted.</span></span>
+  </label>
+
+  <div class="banner info">{{ icon("info") }}<span class="grow">With AI on, a lead's input column (for example a channel link), the public data fetched for it and your playbook's instructions are sent to the model provider below. Nothing is sent until a campaign uses a playbook. Keys stay on this server, encrypted with <code>SECRET_KEY</code>.</span></div>
+
+  <h3 class="subhead">Model</h3>
+  <div class="fields-3">
+    <div class="field"><label for="ai_provider">Provider</label>
+      <select id="ai_provider" name="ai_provider">
+        <option value="anthropic" {{ 'selected' if settings.ai_provider == 'anthropic' }}>Anthropic API (your key)</option>
+        <option value="claude_code" {{ 'selected' if settings.ai_provider == 'claude_code' }} {{ 'disabled' if not ai.has_cli }}>Claude Code on this machine{{ '' if ai.has_cli else ' (not installed)' }}</option>
+      </select>
+      <div class="hint">Claude Code runs <code>claude -p</code> with the account it's signed in to. For local use only.</div>
+    </div>
+    <div class="field"><label for="ai_model">Model</label>
+      <select id="ai_model" name="ai_model">
+        {% for m in ai.models %}<option value="{{ m }}" {{ 'selected' if settings.ai_model == m }}>{{ m }}</option>{% endfor %}
+      </select></div>
+    <div class="field"><label for="ai_effort">Effort</label>
+      <select id="ai_effort" name="ai_effort">
+        {% for e in ai.efforts %}<option value="{{ e }}" {{ 'selected' if settings.ai_effort == e }}>{{ e }}</option>{% endfor %}
+      </select>
+      <div class="hint">Higher thinks longer and costs more per lead.</div></div>
+  </div>
+  <div class="field"><label for="ai_api_key">Anthropic API key</label>
+    {% if ai.api_key_env %}
+      <input id="ai_api_key" type="text" value="Set by ANTHROPIC_API_KEY ({{ ai.api_key }})" disabled>
+    {% else %}
+      <input id="ai_api_key" type="password" name="ai_api_key" autocomplete="off" placeholder="{{ 'Saved (' ~ ai.api_key ~ ') — type to replace' if ai.api_key else 'sk-ant-…' }}">
+      {% if ai.api_key %}<label class="check small"><input type="checkbox" name="clear_ai_api_key"> Remove the saved key</label>{% endif %}
+    {% endif %}
+    {% if not ai.has_sdk %}<div class="hint" style="color:var(--warn)">The Anthropic SDK isn't installed: <code>pip install 'outreach-wise[ai]'</code></div>{% endif %}
+  </div>
+
+  <h3 class="subhead">Data sources</h3>
+  <div class="field"><label for="youtube_api_key">YouTube Data API key</label>
+    {% if ai.youtube_key_env %}
+      <input id="youtube_api_key" type="text" value="Set by YOUTUBE_API_KEY ({{ ai.youtube_key }})" disabled>
+    {% else %}
+      <input id="youtube_api_key" type="password" name="youtube_api_key" autocomplete="off" placeholder="{{ 'Saved (' ~ ai.youtube_key ~ ') — type to replace' if ai.youtube_key else 'AIza…' }}">
+      {% if ai.youtube_key %}<label class="check small"><input type="checkbox" name="clear_youtube_api_key"> Remove the saved key</label>{% endif %}
+    {% endif %}
+    <div class="hint">Needed by the "YouTube channel" source (channel info, latest videos, views). A free key from Google Cloud Console → APIs → YouTube Data API v3. About 3 quota units per lead.</div>
+  </div>
+
+  <h3 class="subhead">Limits and safety</h3>
+  <div class="fields-3">
+    <div class="field"><label for="ai_daily_limit">Leads researched per day</label><input id="ai_daily_limit" type="number" name="ai_daily_limit" min="1" max="5000" value="{{ settings.ai_daily_limit }}"><div class="hint">{{ ai.usage.count or 0 }} today</div></div>
+    <div class="field"><label for="ai_monthly_budget_usd">Monthly spend cap (USD, estimated)</label><input id="ai_monthly_budget_usd" type="number" step="0.5" min="0" name="ai_monthly_budget_usd" value="{{ settings.ai_monthly_budget_usd }}"><div class="hint">${{ '%.2f' % (ai.usage.spend or 0) }} this month{% if settings.ai_provider == 'claude_code' %} (Claude Code reports its own estimate){% endif %}</div></div>
+  </div>
+  {% if ai.paused %}<div class="banner warn">{{ icon("pause") }}<span class="grow">{{ ai.paused }} Research continues when the limit resets or you raise it.</span></div>{% endif %}
+  <label class="check"><input type="checkbox" name="ai_require_approval" {{ 'checked' if settings.ai_require_approval }}> <span><strong>Require my approval before an AI-written email is sent</strong><br><span class="hint">Default for new campaigns. A campaign can turn it off once you trust its playbook.</span></span></label>
+
+  <div class="row" style="justify-content:flex-end;margin-top:14px">
+    <button class="btn" name="action" value="test">Save &amp; test the model</button>
+    <button class="btn primary" name="action" value="save">Save</button>
+  </div>
+</form>

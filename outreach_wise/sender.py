@@ -8,7 +8,6 @@ Duplicate-send protection:
   3. Only one process runs the worker (see worker.py lease lock).
 """
 
-import base64
 import random
 import sqlite3
 from datetime import datetime, time, timedelta
@@ -16,11 +15,10 @@ from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid
 from zoneinfo import ZoneInfo
 
-from . import campaigns, db, inbox
+from . import campaigns, db, inbox, transports
 from .config import Config
 from .google import AuthError, Google, GoogleError, SendStateUnknown
 from .rendering import MissingVariable, render, single_line
-from .security import decrypt
 
 MAX_ATTEMPTS = 3
 RETRY_DELAY = timedelta(minutes=30)
@@ -223,6 +221,18 @@ def _pick_variant(
     return best
 
 
+def _pinned_variant(
+    conn: sqlite3.Connection, enrollment: sqlite3.Row, step: sqlite3.Row
+) -> sqlite3.Row | None:
+    """The variant picked ahead of time for this step (AI personalization), if still active."""
+    if not enrollment["pinned_variant_id"] or enrollment["pinned_step"] != step["position"]:
+        return None
+    return conn.execute(
+        "SELECT * FROM variants WHERE id = ? AND step_id = ? AND active = 1",
+        (enrollment["pinned_variant_id"], step["id"]),
+    ).fetchone()
+
+
 def process(
     conn: sqlite3.Connection,
     cfg: Config,
@@ -259,7 +269,9 @@ def process(
         conn.commit()
         return "skipped"
     previous = _previous_variant(conn, enrollment, step["position"]) if step["position"] > 1 else None
-    variant = _pick_variant(conn, step["id"], previous["id"] if previous else None)
+    variant = _pinned_variant(conn, enrollment, step) or _pick_variant(
+        conn, step["id"], previous["id"] if previous else None
+    )
     if not variant:
         has_active = conn.execute(
             "SELECT 1 FROM variants WHERE step_id = ? AND active = 1", (step["id"],)
@@ -284,6 +296,17 @@ def process(
         conn.commit()
         return "skipped"
     variables = campaigns.lead_variables(cfg, lead)
+    # AI fields ({{ai_*}}): wait until they are written (and approved), never send a blank.
+    if "ai_" in variant["subject"] + variant["body"]:
+        from .ai import scheduler  # noqa: PLC0415 — optional feature, avoids an import cycle
+
+        verdict = scheduler.gate(conn, settings, enrollment, step, variant, lead, variables, moment)
+        if verdict:
+            if verdict != "held":
+                _stop(conn, enrollment, "stopped", verdict)
+                db.log_event(conn, "skip", f"Skipped {lead['email']}: {verdict}", level="warning", **log)
+            conn.commit()
+            return "skipped"
     try:
         subject = (
             campaigns.reply_subject(enrollment["last_subject"])
@@ -299,14 +322,29 @@ def process(
 
     # 3. Prepare the live email before claiming, so nothing but the API call sits between
     #    the claim and its result.
-    raw = our_message_id = refresh = None
+    mime = our_message_id = transport = None
     if mode == "live":
         try:
-            refresh = decrypt(cfg.secret_key, account["refresh_token"])
+            transport = transports.for_account(account, cfg.secret_key, google)
         except ValueError as err:
             inbox.disable_account(conn, account, err)
             return "failed"
-        raw, our_message_id = build_mime(
+        if (
+            enrollment["next_step"] > 1
+            and transports.kind(account) != "gmail_api"
+            and not account["imap_host"]
+        ):
+            # Without IMAP we can't see replies: a follow-up could go to someone who already
+            # answered. Hold the sequence instead of risking that.
+            _stop(
+                conn,
+                enrollment,
+                "stopped",
+                "follow-ups from an SMTP inbox need an IMAP server to detect replies",
+            )
+            conn.commit()
+            return "skipped"
+        mime, our_message_id = build_mime(
             from_email=account["email"],
             from_name=settings["from_name"],
             to=lead["email"],
@@ -376,10 +414,15 @@ def process(
 
     # 5. Live send.
     try:
-        sent = google.send(refresh, raw, enrollment["thread_id"] if threaded else None)
+        sent = transport.send(mime, enrollment["thread_id"] if threaded else None)
     except SendStateUnknown as err:
         conn.execute("UPDATE messages SET status = 'unknown', error = ? WHERE id = ?", (str(err), message_id))
-        _stop(conn, enrollment, "stopped", "send not confirmed by Gmail; check the Sent folder (not retried)")
+        _stop(
+            conn,
+            enrollment,
+            "stopped",
+            "send not confirmed by the mail server; check the Sent folder (not retried)",
+        )
         db.log_event(
             conn,
             "error",
@@ -413,20 +456,20 @@ def process(
         conn.commit()
         return "failed"
 
-    # 6. Record success immediately, then fetch the real Message-ID for threading follow-ups.
+    # 6. Record success immediately, then the transport's best-effort follow-up work (Gmail:
+    #    fetch the real Message-ID for threading; SMTP: file a copy in Sent).
+    #    gmail_id / gmail_thread_id hold the provider id and thread key for every transport.
     conn.execute(
         "UPDATE messages SET status = 'sent', sent_at = ?, gmail_id = ?, gmail_thread_id = ?, rfc_message_id = ?"
         " WHERE id = ?",
-        (stamp, sent["id"], sent["threadId"], our_message_id, message_id),
+        (stamp, sent.provider_id, sent.thread_key, sent.rfc_message_id, message_id),
     )
     conn.commit()
-    rfc_message_id = our_message_id
-    try:
-        rfc_message_id = google.message(refresh, sent["id"])["headers"].get("message-id", our_message_id)
-        conn.execute("UPDATE messages SET rfc_message_id = ? WHERE id = ?", (rfc_message_id, message_id))
-    except GoogleError:
-        pass  # threading still works through threadId
-    _advance(conn, enrollment, moment, root_subject, sent["threadId"], rfc_message_id, account["id"])
+    sent, warning = transport.after_send(mime, sent)
+    conn.execute("UPDATE messages SET rfc_message_id = ? WHERE id = ?", (sent.rfc_message_id, message_id))
+    if warning:
+        db.log_event(conn, "sent", warning, level="warning", account_id=account["id"], **log)
+    _advance(conn, enrollment, moment, root_subject, sent.thread_key, sent.rfc_message_id, account["id"])
     conn.execute(
         "UPDATE leads SET status = 'contacted', updated_at = ? WHERE id = ? AND status = 'new'",
         (stamp, lead["id"]),
@@ -495,7 +538,7 @@ def _advance(
         """
         UPDATE enrollments SET next_step = ?, next_send_at = ?, status = ?, last_subject = ?,
             thread_id = COALESCE(?, thread_id), last_message_id = COALESCE(?, last_message_id),
-            account_id = COALESCE(account_id, ?), updated_at = ?
+            account_id = COALESCE(account_id, ?), updated_at = ?, pinned_variant_id = NULL, pinned_step = NULL
         WHERE id = ?
         """,
         (
@@ -521,8 +564,8 @@ def build_mime(
     body: str,
     in_reply_to: str | None = None,
     unsubscribe_url: str | None = None,
-) -> tuple[str, str]:
-    """Plain-text email, base64url-encoded for the Gmail API. Returns (raw, Message-ID)."""
+) -> tuple[EmailMessage, str]:
+    """Plain-text email. Returns (message, Message-ID); the transport encodes it as it needs."""
     message = EmailMessage()
     message["From"] = formataddr((from_name, from_email)) if from_name else from_email
     message["To"] = to
@@ -539,7 +582,7 @@ def build_mime(
         message["List-Unsubscribe-Post"] = "List-Unsubscribe=One-Click"
     message["List-Unsubscribe"] = ", ".join(unsubscribe)
     message.set_content(body)
-    return base64.urlsafe_b64encode(message.as_bytes()).decode(), message_id
+    return message, message_id
 
 
 # --- crash recovery -------------------------------------------------------------------------

@@ -932,6 +932,12 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             return render_template("unsubscribe.html", state="done", sender_name=sender_name)
         return render_template("unsubscribe.html", state="confirm", token=token, sender_name=sender_name)
 
+    from .ai.web import register as register_ai  # optional AI personalization (outreach_wise/ai/)
+
+    register_ai(app, cfg)
+    from .smtp_web import register as register_smtp  # SMTP/IMAP inboxes + domain health
+
+    register_smtp(app, cfg)
     return app
 
 

@@ -317,6 +317,16 @@ DEFAULT_SETTINGS = {
     "sync_interval_minutes": 30,
     "inbox_poll_minutes": 5,
     "sending_paused": False,
+    # AI personalization (opt-in). Keys live encrypted in kv (ai_api_key, youtube_api_key).
+    "ai_enabled": False,
+    "ai_provider": "anthropic",  # anthropic | claude_code
+    "ai_model": "claude-opus-5-5",
+    "ai_effort": "medium",
+    "ai_daily_limit": 300,  # leads researched per day
+    "ai_monthly_budget_usd": 20.0,
+    "ai_lookahead_hours": 48,  # prepare AI fields this long before a step is due
+    "ai_stale_days": 30,
+    "ai_require_approval": True,  # default for new campaigns
 }
 
 
@@ -359,6 +369,10 @@ def migrate(conn: sqlite3.Connection) -> None:
 
         library.seed(conn)
         conn.commit()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'playbooks'").fetchone():
+        from .ai import playbooks  # noqa: PLC0415 — avoid an import cycle
+
+        playbooks.sync_examples(conn)
 
 
 def init_db(path: str) -> None:

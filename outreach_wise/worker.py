@@ -1,4 +1,5 @@
-"""Background worker: a single loop that syncs the sheet, polls inboxes and sends.
+"""Background worker: a single loop that syncs the sheet, polls inboxes, checks the sending
+domains weekly and sends.
 
 Runs as a thread inside the web process by default (`outreach-wise serve`) or on its own
 (`outreach-wise worker`). A lease lock in the database guarantees that only one worker is
@@ -13,7 +14,7 @@ import threading
 import uuid
 from datetime import timedelta
 
-from . import db, inbox, sender, sheets
+from . import db, deliverability, inbox, sender, sheets
 from .config import Config
 from .google import AuthError, Google, GoogleError
 
@@ -41,7 +42,9 @@ def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
     if _due(conn, "job:inbox", settings["inbox_poll_minutes"]):
         db.set_kv(conn, "job:inbox", db.iso(db.now()))
         conn.commit()
-        for account in conn.execute("SELECT * FROM accounts WHERE enabled = 1").fetchall():
+        # SMTP inboxes without an IMAP server can't be read (the sender holds their follow-ups).
+        readable = "SELECT * FROM accounts WHERE enabled = 1 AND (transport = 'gmail_api' OR imap_host <> '')"
+        for account in conn.execute(readable).fetchall():
             try:
                 inbox.poll(conn, cfg, google, account)
             except (AuthError, ValueError) as err:
@@ -55,6 +58,16 @@ def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
             except Exception:
                 conn.rollback()
                 log.exception("Inbox poll crashed for %s", account["email"])
+
+    if _due(conn, "job:deliverability", deliverability.INTERVAL_MINUTES):
+        # Weekly SPF / DKIM / DMARC check of every sending domain (results in the activity log).
+        db.set_kv(conn, "job:deliverability", db.iso(db.now()))
+        conn.commit()
+        try:
+            deliverability.run(conn)
+        except Exception:
+            conn.rollback()
+            log.exception("Deliverability check crashed")
 
     sender.run_send_cycle(conn, cfg, google)
 
@@ -80,6 +93,9 @@ class Worker:
         ttl = timedelta(seconds=max(120, self.cfg.worker_tick_seconds * 4))
         holding = False
         log.info("Worker started (%s)", self.owner)
+        # AI research is slow (seconds to minutes per lead), so it runs beside the send loop.
+        ai_worker = AIWorker(self.cfg, self._stop, self.owner)
+        ai_worker.start()
         while not self._stop.is_set():
             conn = None
             try:
@@ -107,4 +123,48 @@ class Worker:
             conn.close()
         except sqlite3.Error:
             pass
+        ai_worker.join(timeout=30)
         log.info("Worker stopped")
+
+
+class AIWorker(threading.Thread):
+    """Plans and writes AI fields (outreach_wise/ai/). Idle unless AI personalization is on.
+    Holds its own "ai" lease so only one process calls the model at a time."""
+
+    def __init__(self, cfg: Config, stop: threading.Event, owner: str):
+        super().__init__(name="outreach-wise-ai", daemon=True)
+        self.cfg, self._stop_event, self.owner = cfg, stop, owner
+
+    def run(self) -> None:
+        from .ai import scheduler  # noqa: PLC0415
+
+        ttl = timedelta(minutes=10)
+        recovered = False
+        while not self._stop_event.is_set():
+            conn = None
+            try:
+                conn = db.connect(self.cfg.database_path)
+                settings = db.get_settings(conn)
+                if settings["ai_enabled"] and db.acquire_lease(conn, "ai", self.owner, ttl):
+                    if not recovered:
+                        scheduler.recover(conn)
+                        recovered = True
+                    scheduler.plan(conn, settings)
+                    # One lead at a time, renewing the lease in between.
+                    while not self._stop_event.is_set() and scheduler.run(conn, self.cfg, settings):
+                        db.acquire_lease(conn, "ai", self.owner, ttl)
+                        settings = db.get_settings(conn)
+                        if not settings["ai_enabled"]:
+                            break
+            except Exception:
+                log.exception("AI worker tick failed")
+            finally:
+                if conn:
+                    conn.close()
+            self._stop_event.wait(max(self.cfg.worker_tick_seconds, 10))
+        try:
+            conn = db.connect(self.cfg.database_path)
+            db.release_lease(conn, "ai", self.owner)
+            conn.close()
+        except sqlite3.Error:
+            pass

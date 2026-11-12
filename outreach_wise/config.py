@@ -43,6 +43,9 @@ class Config:
     port: int = 8000
     run_worker: bool = True
     worker_tick_seconds: int = 15
+    # Optional AI personalization keys. When set, they win over the keys saved in Settings.
+    anthropic_api_key: str = ""
+    youtube_api_key: str = ""
 
     @property
     def oauth_redirect_uri(self) -> str:
@@ -81,4 +84,6 @@ def load_config(env: dict | None = None) -> Config:
         port=int(env.get("PORT", "8000")),
         run_worker=_bool(env.get("RUN_WORKER", "true")),
         worker_tick_seconds=int(env.get("WORKER_TICK_SECONDS", "15")),
+        anthropic_api_key=env.get("ANTHROPIC_API_KEY", "").strip(),
+        youtube_api_key=env.get("YOUTUBE_API_KEY", "").strip(),
     )
