@@ -335,6 +335,47 @@ details[open] summary { margin-bottom: 10px; }
 .center-card { width: 100%; max-width: 380px; }
 .center-card .brand { justify-content: center; margin-bottom: 18px; }
 
+/* --- tabs, toolbars, segmented controls --------------------------------------------------- */
+
+[hidden] { display: none !important; }
+.no-scroll { overflow: hidden; }
+.tabs { display: flex; gap: 4px; border-bottom: 1px solid var(--border); margin: 4px 0 16px; overflow-x: auto; }
+.tabs a {
+  display: inline-flex; align-items: center; gap: 7px; padding: 9px 12px; margin-bottom: -1px;
+  color: var(--text-2); font-weight: 550; border-bottom: 2px solid transparent; white-space: nowrap;
+}
+.tabs a:hover { color: var(--text); text-decoration: none; }
+.tabs a[aria-selected="true"] { color: var(--accent-soft-ink); border-bottom-color: var(--accent); }
+.tabs svg { width: 16px; height: 16px; }
+.tabs .count { font-size: 11.5px; padding: 0 6px; border-radius: 99px; background: var(--surface-2); color: var(--muted); }
+.toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+.toolbar input[type=search] { flex: 1; min-width: 200px; max-width: 360px; }
+.segmented { display: inline-flex; padding: 3px; gap: 2px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 9px; flex-wrap: wrap; }
+.segmented button {
+  display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; color: var(--text-2);
+  font: 550 13px/1 var(--font); padding: 7px 12px; border-radius: 6px; cursor: pointer;
+}
+.segmented button svg { width: 15px; height: 15px; }
+.segmented button.on { background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08); }
+
+
+/* --- templates ---------------------------------------------------------------------------- */
+
+.tpl-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 14px; }
+.tpl-card { display: flex; flex-direction: column; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 16px; box-shadow: var(--shadow); }
+.tpl-card:target { border-color: var(--accent); }
+.tpl-card header { display: flex; gap: 8px; }
+.tpl-card header .grow { flex: 1; display: flex; flex-wrap: wrap; gap: 6px 8px; align-items: center; }
+.tpl-subject { font-size: 13px; font-weight: 560; }
+.tpl-body {
+  margin: 0; white-space: pre-wrap; font: 12.5px/1.5 var(--font); color: var(--text-2);
+  max-height: 150px; overflow: hidden; mask-image: linear-gradient(to bottom, #000 75%, transparent);
+}
+.tpl-card footer { display: flex; align-items: center; gap: 6px; margin-top: auto; padding-top: 6px; border-top: 1px solid var(--border); }
+.tpl-list { display: flex; flex-direction: column; gap: 10px; }
+.tpl-item { display: flex; flex-direction: column; gap: 6px; padding: 12px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--surface-2); }
+.tpl-item .tpl-body { max-height: 96px; }
+
 .modal { width: min(640px, calc(100vw - 32px)); padding: 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); }
 .modal::backdrop { background: rgba(10, 10, 12, 0.45); }
 .modal-head, .modal-foot { display: flex; align-items: center; gap: 8px; padding: 14px 18px; }

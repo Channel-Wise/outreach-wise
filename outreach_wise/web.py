@@ -9,9 +9,9 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
-from flask import Flask, abort, flash, g, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
 
-from . import campaigns, db, inbox, sender, sheets
+from . import campaigns, db, inbox, library, sender, sheets
 from .config import Config
 from .google import SCOPES, Google, GoogleError
 from .security import encrypt, password_matches, read_unsubscribe_token
@@ -462,6 +462,9 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         ).fetchone() or abort(404)
         return row["campaign_id"]
 
+    def wants_json() -> bool:
+        return request.headers.get("X-Requested-With") == "fetch"
+
     def done(campaign_id: int, error: str | None, success: str, anchor: str = "sequence"):
         if error:
             conn().rollback()
@@ -512,6 +515,56 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
     def variant_delete(variant_id: int):
         campaign_id = variant_campaign(variant_id)
         return done(campaign_id, campaigns.delete_variant(conn(), variant_id), "Variant deleted.")
+
+    # --- template library -------------------------------------------------------------------
+
+    @app.get("/templates")
+    def template_list():
+        return render_template(
+            "templates.html",
+            templates=library.all_templates(conn()),
+            categories=library.CATEGORIES,
+            variables=_template_variables(conn()),
+        )
+
+    def template_saved(template_id: int | None, error: str | None, success: str):
+        c = conn()
+        if error:
+            c.rollback()
+        else:
+            c.commit()
+        if wants_json():
+            return jsonify(
+                {"ok": not error, "error": error, "message": success, "templates": library.all_templates(c)}
+            ), (400 if error else 200)
+        flash(error or success, "error" if error else "success")
+        return back(url_for("template_list") + (f"#template-{template_id}" if template_id else ""))
+
+    @app.post("/templates")
+    def template_create():
+        f = request.form
+        template_id, error = library.save(
+            conn(), f.get("name", ""), f.get("category", ""), f.get("subject", ""), f.get("body", "")
+        )
+        return template_saved(template_id, error, "Template saved to your library.")
+
+    @app.post("/templates/<int:template_id>")
+    def template_update(template_id: int):
+        f = request.form
+        _, error = library.save(
+            conn(),
+            f.get("name", ""),
+            f.get("category", ""),
+            f.get("subject", ""),
+            f.get("body", ""),
+            template_id,
+        )
+        return template_saved(template_id, error, "Template updated.")
+
+    @app.post("/templates/<int:template_id>/delete")
+    def template_delete(template_id: int):
+        library.delete(conn(), template_id)
+        return template_saved(None, None, "Template deleted.")
 
     @app.get("/campaigns/<int:campaign_id>/preview")
     def campaign_preview(campaign_id: int):

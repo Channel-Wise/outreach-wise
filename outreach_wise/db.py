@@ -170,6 +170,19 @@ MIGRATIONS = [
         expires_at TEXT NOT NULL
     );
     """,
+    """
+    -- Saved email ideas the user can paste into any step (seeded by library.seed()).
+    CREATE TABLE email_templates (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        category TEXT NOT NULL DEFAULT 'First email',
+        subject TEXT NOT NULL DEFAULT '',
+        body TEXT NOT NULL DEFAULT '',
+        builtin INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL,
+        updated_at TEXT NOT NULL
+    );
+    """,
 ]
 
 DEFAULT_SETTINGS = {
@@ -224,6 +237,11 @@ def migrate(conn: sqlite3.Connection) -> None:
     version = conn.execute("PRAGMA user_version").fetchone()[0]
     for number, sql in enumerate(MIGRATIONS[version:], start=version + 1):
         conn.executescript(f"BEGIN;\n{sql}\nPRAGMA user_version = {number};\nCOMMIT;")
+    if version < 2 <= len(MIGRATIONS):
+        from . import library  # noqa: PLC0415 — avoid an import cycle
+
+        library.seed(conn)
+        conn.commit()
 
 
 def init_db(path: str) -> None:
