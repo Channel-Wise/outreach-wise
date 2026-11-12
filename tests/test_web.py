@@ -46,7 +46,9 @@ def test_every_page_renders(client, conn, cfg, google, account):
         "/activity?kind=dry_run",
         "/suppressions",
         "/settings",
-        "/queue",
+        "/emails",
+        "/emails?view=queue",
+        "/emails?mode=all&status=failed&q=x",
         "/templates",
     ]:
         response = client.get(path)
@@ -143,5 +145,26 @@ def test_pause_all_sending(client, conn):
 def test_queue_page_shows_estimates_for_live_campaigns(client, conn, account):
     make_campaign(conn, live=True, leads=2)
     login(client)
-    page = client.get("/queue").data.decode()
+    assert client.get("/queue").headers["Location"].endswith("/emails?view=queue")  # old link
+    page = client.get("/emails?view=queue").data.decode()
     assert "lead1@leads.io" in page and "≈" in page and "/ 40 today" in page
+
+
+def test_emails_page_lists_sent_emails(client, conn, cfg, google, account):
+    make_campaign(conn, live=True, leads=2)
+    sender.run_send_cycle(conn, cfg, google)
+    conn.execute("UPDATE messages SET replied_at = created_at")
+    message = conn.execute("SELECT * FROM messages").fetchone()
+    conn.execute(
+        "INSERT INTO inbound (gmail_id, kind, snippet, lead_id, enrollment_id, received_at)"
+        " VALUES ('r1', 'reply', 'Sounds good, call me', ?, ?, ?)",
+        (message["lead_id"], message["enrollment_id"], message["created_at"]),
+    )
+    conn.commit()
+    login(client)
+    page = client.get("/emails").data.decode()
+    assert message["to_email"] in page and "Hello Name1!" in page  # the body opens in place
+    assert "Sounds good, call me" in page and 'href="/emails?view=queue"' in page
+    assert message["to_email"] not in client.get("/emails?mode=dry_run").data.decode()
+    assert message["to_email"] not in client.get("/emails?q=nothing-matches").data.decode()
+    assert message["to_email"] in client.get("/emails?status=replied&campaign=1").data.decode()

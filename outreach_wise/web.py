@@ -229,13 +229,67 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             last_sync=db.get_kv(c, "last_sync"),
         )
 
-    # --- send queue ---------------------------------------------------------------------------
+    # --- emails: everything sent, and the queue of what's next -------------------------------
 
     @app.get("/queue")
     def queue():
+        return redirect(url_for("emails", view="queue"))
+
+    @app.get("/emails")
+    def emails():
         c = conn()
         settings = db.get_settings(c)
-        return render_template("queue.html", q=sender.upcoming(c, db.now(), settings))
+        view = request.args.get("view", "sent")
+        q = sender.upcoming(c, db.now(), settings)
+        campaign_list = c.execute("SELECT id, name FROM campaigns ORDER BY id DESC").fetchall()
+        sent_total = c.execute("SELECT COUNT(*) FROM messages WHERE mode = 'live'").fetchone()[0]
+        if view == "queue":
+            return render_template(
+                "emails.html", view=view, q=q, campaign_list=campaign_list, sent_total=sent_total
+            )
+
+        filters = {k: request.args.get(k, "").strip() for k in ("campaign", "mode", "status", "q")}
+        if filters["mode"] not in ("live", "dry_run", "all"):
+            filters["mode"] = "live"
+        where, params = [], []
+        if filters["mode"] != "all":
+            where.append("m.mode = ?")
+            params.append(filters["mode"])
+        if filters["campaign"].isdigit():
+            where.append("m.campaign_id = ?")
+            params.append(int(filters["campaign"]))
+        if filters["status"] == "replied":
+            where.append("m.replied_at IS NOT NULL")
+        elif filters["status"] in ("sent", "failed", "dry_run"):
+            where.append("m.status = ?")
+            params.append(filters["status"])
+        if filters["q"]:
+            where.append("(m.to_email LIKE ? OR m.subject LIKE ? OR m.body LIKE ?)")
+            params += [f"%{filters['q']}%"] * 3
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        page = max(int(request.args.get("page", 1) or 1), 1)
+        total = c.execute(f"SELECT COUNT(*) FROM messages m {clause}", params).fetchone()[0]
+        rows = c.execute(
+            "SELECT m.*, s.position, v.label, ca.name AS campaign_name, a.email AS account_email,"
+            " (SELECT i.snippet FROM inbound i WHERE i.enrollment_id = m.enrollment_id AND i.kind = 'reply'"
+            "  ORDER BY i.received_at DESC LIMIT 1) AS reply_snippet"
+            " FROM messages m JOIN steps s ON s.id = m.step_id JOIN variants v ON v.id = m.variant_id"
+            " JOIN campaigns ca ON ca.id = m.campaign_id LEFT JOIN accounts a ON a.id = m.account_id"
+            f" {clause} ORDER BY COALESCE(m.sent_at, m.created_at) DESC, m.id DESC LIMIT ? OFFSET ?",
+            [*params, PAGE_SIZE, (page - 1) * PAGE_SIZE],
+        ).fetchall()
+        return render_template(
+            "emails.html",
+            view="sent",
+            q=q,
+            rows=rows,
+            total=total,
+            filters=filters,
+            page=page,
+            pages=max(1, -(-total // PAGE_SIZE)),
+            campaign_list=campaign_list,
+            sent_total=sent_total,
+        )
 
     @app.post("/inbox/check")
     def check_inbox_now():
