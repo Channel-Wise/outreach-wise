@@ -7,7 +7,7 @@ from string import ascii_uppercase
 
 from . import db
 from .config import Config
-from .rendering import MissingVariable, render, required_variables, single_line
+from .rendering import MissingVariable, render, required_variables, single_line, variables_in
 from .security import unsubscribe_token
 
 FIRST_SUBJECT = "Quick question about {{channel_name|your channel}}"
@@ -38,8 +38,23 @@ def unsubscribe_url(cfg: Config, lead_id: int) -> str:
     return f"{cfg.base_url}/u/{unsubscribe_token(cfg.secret_key, lead_id)}"
 
 
-def lead_variables(cfg: Config, lead: sqlite3.Row) -> dict:
-    fields = json.loads(lead["fields"])
+# kv: {old name: new name} of sheet columns renamed when headers started keeping their letters
+# ("Kanal Adı" was {{kanal_ad}}, now {{kanal_adi}}). Written by sheets.migrate_renamed_keys.
+RENAMED_COLUMNS = "renamed_columns"
+
+
+def renamed_columns(conn: sqlite3.Connection) -> dict[str, str]:
+    return db.get_kv(conn, RENAMED_COLUMNS, {})
+
+
+def with_old_names(fields: dict, renamed: dict[str, str]) -> dict:
+    """A lead's columns, plus each renamed column under its old name too, so templates and
+    playbooks written with {{kanal_ad}} keep working. A real column of that name wins."""
+    return {**{old: fields[new] for old, new in renamed.items() if new in fields}, **fields}
+
+
+def lead_variables(conn: sqlite3.Connection, cfg: Config, lead: sqlite3.Row) -> dict:
+    fields = with_old_names(json.loads(lead["fields"]), renamed_columns(conn))
     return {**fields, "email": lead["email"], "unsubscribe_url": unsubscribe_url(cfg, lead["id"])}
 
 
@@ -643,7 +658,10 @@ def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str
         for variant in step["variants"]:
             variant["renders"] = []
             for lead in sample_leads:
-                variables = {**lead_variables(cfg, lead), **ai_preview_values(conn, playbook_id, lead["id"])}
+                variables = {
+                    **lead_variables(conn, cfg, lead),
+                    **ai_preview_values(conn, playbook_id, lead["id"]),
+                }
                 try:
                     subject_template = variant["subject"] or reply_subject(first_subject)
                     rendered = {
@@ -656,22 +674,30 @@ def preview(conn: sqlite3.Connection, cfg: Config, campaign_id: int, footer: str
                     rendered = {"email": lead["email"], "error": str(err)}
                 variant["renders"].append(rendered)
 
-    required = set()
+    required, used = set(), set()
     for step in steps:
         for variant in step["variants"]:
             if variant["active"]:
                 required |= required_variables(variant["subject"] + variant["body"] + footer)
+                used |= variables_in(variant["subject"] + variant["body"] + footer)
     required -= {"email", "unsubscribe_url"}
     required = {name for name in required if not name.startswith("ai_")}  # written by the playbook
+    renamed = renamed_columns(conn)
     missing: dict[str, int] = {}
     affected = 0
     for lead in enrolled:
-        fields = json.loads(lead["fields"])
+        fields = with_old_names(json.loads(lead["fields"]), renamed)
         gaps = [name for name in required if not str(fields.get(name, "")).strip()]
         for name in gaps:
             missing[name] = missing.get(name, 0) + 1
         affected += bool(gaps)
-    return {"steps": steps, "enrolled": len(enrolled), "missing": missing, "affected": affected}
+    return {
+        "steps": steps,
+        "enrolled": len(enrolled),
+        "missing": missing,
+        "affected": affected,
+        "renamed": {name: renamed[name] for name in sorted(used) if name in renamed},
+    }
 
 
 def go_live_blockers(conn: sqlite3.Connection, campaign_id: int) -> list[str]:

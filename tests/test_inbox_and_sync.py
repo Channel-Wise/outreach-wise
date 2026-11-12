@@ -1,7 +1,9 @@
+import json
+
 import pytest
 from conftest import make_campaign
 
-from outreach_wise import campaigns, db, inbox, sender, sheets
+from outreach_wise import campaigns, db, inbox, lists, sender, sheets
 from outreach_wise.rendering import MissingVariable, render, required_variables
 
 
@@ -113,6 +115,116 @@ def test_parse_rows_normalizes_and_deduplicates():
         "channel_url": "https://youtube.com/@jane",
     }
     assert stats == {"rows": 4, "no_email": 0, "invalid": 1, "duplicates": 1, "header": True}
+
+
+def test_headers_keep_turkish_and_accented_letters():
+    headers = ["Kanal Adı", "Abone Sayısı", "İletişim", "Şehir/İlçe", "Öğrenci Sayısı", "Ülke", "Prénom"]
+    assert [sheets.normalize_key(h) for h in headers] == [
+        "kanal_adi",
+        "abone_sayisi",
+        "iletisim",
+        "sehir_ilce",
+        "ogrenci_sayisi",
+        "ulke",
+        "prenom",
+    ]
+    # What they were before; Python lowercases "İ" to "i" plus a combining dot.
+    assert [sheets.legacy_key(h) for h in headers[:3]] == ["kanal_ad", "abone_say_s", "i_leti_im"]
+
+
+def test_ascii_headers_keep_their_names():
+    headers = [
+        "E-mail",
+        "First Name",
+        "Channel URL",
+        "  Subscribers (k) ",
+        "KANAL ADI",
+        "#",
+        "".join(map(chr, range(128))),
+    ]
+    assert [sheets.normalize_key(h) for h in headers] == [sheets.legacy_key(h) for h in headers]
+    assert sheets.normalize_key("  Subscribers (k) ") == "subscribers_k"
+
+
+def test_turkish_sheet_on_a_fresh_install(conn, cfg, google, account):
+    db.save_settings(conn, {"sheet_url": "abc123", "sheet_email_column": "E-posta"})
+    google.sheet = [
+        ["E-posta", "Kanal Adı", "Abone Sayısı"],
+        ["eren@example.com", "Eren'in Mutfağı", "120000"],
+    ]
+    sheets.sync(conn, cfg, google)
+    fields = json.loads(conn.execute("SELECT fields FROM leads").fetchone()["fields"])
+    assert fields == {"e_posta": "eren@example.com", "kanal_adi": "Eren'in Mutfağı", "abone_sayisi": "120000"}
+    assert campaigns.renamed_columns(conn) == {}  # nothing was ever stored under the old names
+
+
+def test_sync_moves_old_keys_and_old_names_keep_working(conn, cfg, google, account, monkeypatch):
+    db.save_settings(conn, {"sheet_url": "abc123", "sheet_email_column": "E-posta"})
+    header = ["E-posta", "Kanal Adı", "Abone Sayısı"]
+    google.sheet = [
+        header,
+        ["eren@example.com", "Eren'in Mutfağı", "120000"],
+        ["ayse@example.com", "Ayşe Gezer", "8000"],
+    ]
+    with monkeypatch.context() as before:  # how earlier versions named these columns
+        before.setattr(sheets, "normalize_key", sheets.legacy_key)
+        sheets.sync(conn, cfg, google)
+        older, _ = lists.create(conn, "Eski dosya")  # and a file imported into another list
+        sheets.import_rows(
+            conn, older, [header, ["can@example.com", "Can'ın Atölyesi", "500"]], "File", "E-posta"
+        )
+    campaign_id = campaigns.create(conn, "Kanallar")
+    first = campaigns.steps_with_variants(conn, campaign_id)[0]["variants"][0]["id"]
+    campaigns.update_variant(
+        conn, first, "{{kanal_ad}}", "Merhaba {{kanal_ad}}, {{abone_say_s}} abone!", True
+    )
+    campaigns.enroll(conn, campaign_id)
+
+    def fields(email):
+        return json.loads(conn.execute("SELECT fields FROM leads WHERE email = ?", (email,)).fetchone()[0])
+
+    assert fields("eren@example.com")["kanal_ad"] == "Eren'in Mutfağı"
+
+    # After the upgrade: Eren's data changed, Ayşe left the sheet, Mehmet is new.
+    google.sheet = [
+        header,
+        ["eren@example.com", "Eren'in Yeni Mutfağı", "125000"],
+        ["mehmet@example.com", "Mehmet Kodluyor", "3000"],
+    ]
+    sheets.sync(conn, cfg, google)
+    assert fields("eren@example.com") == {
+        "e_posta": "eren@example.com",
+        "kanal_adi": "Eren'in Yeni Mutfağı",  # no stale kanal_ad left behind by the merge
+        "abone_sayisi": "125000",
+    }
+    assert fields("ayse@example.com") == {
+        "e_posta": "ayse@example.com",
+        "kanal_adi": "Ayşe Gezer",
+        "abone_sayisi": "8000",
+    }
+    assert fields("can@example.com") == {
+        "e_posta": "can@example.com",
+        "kanal_adi": "Can'ın Atölyesi",
+        "abone_sayisi": "500",
+    }
+    assert campaigns.renamed_columns(conn) == {"kanal_ad": "kanal_adi", "abone_say_s": "abone_sayisi"}
+
+    # Emails written with the old names render every lead, including the new one, with fresh values.
+    campaigns.enroll(conn, campaign_id)
+    preview = campaigns.preview(conn, cfg, campaign_id, footer="", sample=4)
+    assert [r["body"] for r in preview["steps"][0]["variants"][0]["renders"]] == [
+        "Merhaba Eren'in Yeni Mutfağı, 125000 abone!",
+        "Merhaba Ayşe Gezer, 8000 abone!",
+        "Merhaba Can'ın Atölyesi, 500 abone!",
+        "Merhaba Mehmet Kodluyor, 3000 abone!",
+    ]
+    assert preview["missing"] == {}
+    assert preview["renamed"] == {"abone_say_s": "abone_sayisi", "kanal_ad": "kanal_adi"}
+
+    # Reported once, in the activity log.
+    sheets.sync(conn, cfg, google)
+    notes = [r[0] for r in conn.execute("SELECT message FROM events WHERE message LIKE '%is now%'")]
+    assert len(notes) == 1 and "{{kanal_ad}} is now {{kanal_adi}}" in notes[0]
 
 
 def test_sheet_without_header_row_uses_column_letters():

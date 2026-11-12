@@ -1,7 +1,7 @@
 import pytest
 from conftest import make_campaign
 
-from outreach_wise import db, sender
+from outreach_wise import campaigns, db, sender
 from outreach_wise.security import unsubscribe_token
 from outreach_wise.web import create_app
 
@@ -54,6 +54,20 @@ def test_every_page_renders(client, conn, cfg, google, account):
         response = client.get(path)
         assert response.status_code == 200, path
     assert b"Hi Name1" in client.get("/campaigns/1/preview").data
+
+
+def test_preview_points_out_renamed_columns(client, conn):
+    make_campaign(conn, leads=1)
+    conn.execute(
+        "UPDATE variants SET body = 'Merhaba {{kanal_ad}}' WHERE id = (SELECT MIN(id) FROM variants)"
+    )
+    conn.execute("""UPDATE leads SET fields = '{"first_name": "Eren", "kanal_adi": "Eren''in Mutfağı"}'""")
+    db.set_kv(conn, campaigns.RENAMED_COLUMNS, {"kanal_ad": "kanal_adi"})
+    conn.commit()
+    login(client)
+    page = client.get("/campaigns/1/preview").get_data(as_text=True)
+    assert "Merhaba Eren&#39;in Mutfağı" in page
+    assert "<code>{{kanal_ad}}</code> is now <code>{{kanal_adi}}</code>" in page
 
 
 def test_campaign_editing_flow(client, conn):

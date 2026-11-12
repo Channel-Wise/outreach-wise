@@ -294,10 +294,12 @@ def register(app: Flask, cfg: Config) -> None:
             parsed = None
         columns = lead_columns(c)
         input_column = parsed.input_column if parsed else ""
+        renamed = campaigns.renamed_columns(c)
         test_leads = [
             r
             for r in c.execute("SELECT id, email, fields FROM leads ORDER BY id DESC LIMIT 400")
-            if not input_column or str(json.loads(r["fields"]).get(input_column, "")).strip()
+            if not input_column
+            or str(campaigns.with_old_names(json.loads(r["fields"]), renamed).get(input_column, "")).strip()
         ][:60]
         examples = (
             c.execute("SELECT COUNT(*) FROM ai_examples WHERE playbook_id = ?", (row["id"],)).fetchone()[0]
@@ -501,7 +503,7 @@ def register(app: Flask, cfg: Config) -> None:
         if not variant:
             return None
         lead = c.execute("SELECT * FROM leads WHERE id = ?", (row["lead_id"],)).fetchone()
-        variables = campaigns.lead_variables(cfg, lead)
+        variables = campaigns.lead_variables(c, cfg, lead)
         variables.update({f"ai_{k}": v for k, v in vals.items()})
         try:
             subject = single_line(render(variant["subject"], variables)) if variant["subject"].strip() else ""

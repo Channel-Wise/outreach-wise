@@ -33,6 +33,12 @@
 {% else %}
 <div class="banner info">{{ icon("info") }}<span>No leads enrolled yet — showing eligible leads as samples.</span></div>
 {% endif %}
+{% if preview.renamed %}
+<div class="banner info">{{ icon("info") }}<span class="grow">
+  Column names now keep Turkish and accented letters:
+  {% for old, new in preview.renamed.items() %}<code>{{ '{{' ~ old ~ '}}' }}</code> is now <code>{{ '{{' ~ new ~ '}}' }}</code>{{ ", " if not loop.last }}{% endfor %}.
+  These emails still use the old names, which keep working. Switch to the new names when you next edit them.</span></div>
+{% endif %}
 
 <div class="cols">
   <div class="stack">

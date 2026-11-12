@@ -5,7 +5,7 @@ import json
 import sqlite3
 from datetime import datetime
 
-from .. import db
+from .. import campaigns, db
 from ..config import Config
 from . import checks, keys, sources
 from .playbooks import SOURCES, Checks, Field, Playbook, PlaybookError, dump, fingerprint, parse
@@ -120,7 +120,8 @@ def research(
     conn: sqlite3.Connection, cfg: Config, settings: dict, playbook: Playbook, lead: sqlite3.Row, client=None
 ):
     """(research data by source, error or None). An error means: retry later."""
-    value = str(_lead_fields(lead).get(playbook.input_column, "")).strip()
+    fields = campaigns.with_old_names(_lead_fields(lead), campaigns.renamed_columns(conn))
+    value = str(fields.get(playbook.input_column, "")).strip()
     if not value:
         return None, f"no value in the {playbook.input_column} column"
     found = {}

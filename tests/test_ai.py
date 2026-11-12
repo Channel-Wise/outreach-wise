@@ -277,6 +277,15 @@ def test_lead_without_input_is_skipped(conn, cfg, ai_on, playbook_id):
     assert outcome == {"status": "skipped", "skip_reason": "Lead has no value in the channel_url column."}
 
 
+def test_input_column_still_found_by_its_old_name(conn, cfg, ai_on):
+    """A playbook written when "Kanal Bağlantısı" was {{kanal_ba_lant_s}} keeps finding it."""
+    add_leads(conn, 1, kanal_baglantisi="https://www.youtube.com/@someone")
+    db.set_kv(conn, campaigns.RENAMED_COLUMNS, {"kanal_ba_lant_s": "kanal_baglantisi"})
+    lead = conn.execute("SELECT * FROM leads").fetchone()
+    playbook = playbooks.parse(PLAYBOOK.replace('column = "channel_url"', 'column = "kanal_ba_lant_s"'))
+    assert generate.research(conn, cfg, ai_on, playbook, lead) == ({}, None)  # no sources to fetch
+
+
 def test_checks_flag_problems():
     pb = playbooks.parse(PLAYBOOK)
     found = checks.field_checks(
