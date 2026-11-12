@@ -39,6 +39,9 @@ class Config:
     database_path: str = "data/outreach-wise.db"
     google_client_id: str = ""
     google_client_secret: str = ""
+    # Microsoft 365 / Outlook.com sign-in (an app registration in Microsoft Entra).
+    microsoft_client_id: str = ""
+    microsoft_client_secret: str = ""
     host: str = "127.0.0.1"
     port: int = 8000
     run_worker: bool = True
@@ -54,6 +57,14 @@ class Config:
     @property
     def google_configured(self) -> bool:
         return bool(self.google_client_id and self.google_client_secret)
+
+    @property
+    def microsoft_configured(self) -> bool:
+        return bool(self.microsoft_client_id and self.microsoft_client_secret)
+
+    @property
+    def microsoft_redirect_uri(self) -> str:
+        return f"{self.base_url}/oauth/microsoft/callback"
 
     @property
     def is_public(self) -> bool:
@@ -80,6 +91,8 @@ def load_config(env: dict | None = None) -> Config:
         database_path=env.get("DATABASE_PATH", "data/outreach-wise.db"),
         google_client_id=env.get("GOOGLE_CLIENT_ID", ""),
         google_client_secret=env.get("GOOGLE_CLIENT_SECRET", ""),
+        microsoft_client_id=env.get("MICROSOFT_CLIENT_ID", "").strip(),
+        microsoft_client_secret=env.get("MICROSOFT_CLIENT_SECRET", "").strip(),
         host=env.get("HOST", "127.0.0.1"),
         port=int(env.get("PORT", "8000")),
         run_worker=_bool(env.get("RUN_WORKER", "true")),

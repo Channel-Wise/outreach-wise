@@ -11,6 +11,7 @@
     <div class="card-head">
       <div><h2>Inboxes</h2><p>Mailboxes that send: Google accounts, or any provider over SMTP/IMAP. New leads are spread across inboxes; a lead's follow-ups always come from the same inbox and thread.</p></div>
       {% if cfg.google_configured %}<a class="btn primary" href="{{ url_for('account_connect') }}">{{ icon("plus") }}Connect Google account</a>{% endif %}
+      {% if cfg.microsoft_configured %}<a class="btn" href="{{ url_for('microsoft_connect') }}">{{ icon("plus") }}Connect Microsoft 365</a>{% endif %}
     </div>
     {% if not cfg.google_configured %}
       <div class="banner info">{{ icon("info") }}<span class="grow">Set <code>GOOGLE_CLIENT_ID</code> and <code>GOOGLE_CLIENT_SECRET</code> to connect inboxes (README → Google setup). Use this redirect URI in Google Cloud: <code>{{ redirect_uri }}</code></span></div>
@@ -21,7 +22,7 @@
       <tbody>
       {% for a in accounts %}
         <tr>
-          <td><strong>{{ a.email }}</strong><div class="muted small">{% if a.transport == 'smtp_imap' %}SMTP {{ a.smtp_host }}{% if not a.imap_host %} · no IMAP: first emails only{% endif %}{% else %}Google{% endif %} · connected {{ a.created_at | local("%b %d, %Y") }}{% if a.inbox_checked_at %} · inbox checked {{ a.inbox_checked_at | local }}{% endif %}</div>
+          <td><strong>{{ a.email }}</strong><div class="muted small">{% if a.transport == 'smtp_imap' %}SMTP {{ a.smtp_host }}{% if not a.imap_host %} · no IMAP: first emails only{% endif %}{% elif a.transport == 'microsoft' %}Microsoft 365{% else %}Google{% endif %} · connected {{ a.created_at | local("%b %d, %Y") }}{% if a.inbox_checked_at %} · inbox checked {{ a.inbox_checked_at | local }}{% endif %}</div>
             {% if a.last_error %}<div class="small" style="color:var(--bad)">{{ a.last_error }}</div>{% endif %}</td>
           <td>{% if a.enabled %}{{ badge("active", "sending") }}{% else %}{{ badge("paused", "paused") }}{% endif %}</td>
           <td colspan="2">
@@ -29,7 +30,7 @@
               <input type="number" name="daily_limit" value="{{ a.daily_limit }}" min="1" max="2000" style="width:90px" aria-label="Daily limit">
               <label class="check" style="margin:0"><input type="checkbox" name="enabled" {{ 'checked' if a.enabled }}> Enabled</label>
               <button class="btn sm">Save</button>
-              {% if a.last_error %}<a class="btn sm" href="{{ url_for('account_connect') if a.transport != 'smtp_imap' else '#smtp-add' }}"{% if a.transport == 'smtp_imap' %} data-smtp-reconnect="{{ a.email }}"{% endif %}>Reconnect</a>{% endif %}
+              {% if a.last_error %}<a class="btn sm" href="{{ url_for('microsoft_connect', email=a.email) if a.transport == 'microsoft' else (url_for('account_connect') if a.transport != 'smtp_imap' else '#smtp-add') }}"{% if a.transport == 'smtp_imap' %} data-smtp-reconnect="{{ a.email }}"{% endif %}>Reconnect</a>{% endif %}
               <button class="btn sm ghost danger-text" formaction="{{ url_for('account_delete', account_id=a.id) }}" data-confirm="Remove this inbox? Sequences already started from it will stop.">Remove</button>
             </form>
           </td>

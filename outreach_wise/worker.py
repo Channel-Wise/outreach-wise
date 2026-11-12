@@ -14,7 +14,7 @@ import threading
 import uuid
 from datetime import timedelta
 
-from . import db, deliverability, inbox, sender, sheets
+from . import db, deliverability, inbox, microsoft, sender, sheets
 from .config import Config
 from .google import AuthError, Google, GoogleError
 
@@ -28,6 +28,7 @@ def _due(conn: sqlite3.Connection, key: str, every_minutes: int) -> bool:
 
 def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
     settings = db.get_settings(conn)
+    ms = microsoft.configure(cfg)
 
     if settings["sheet_url"] and _due(conn, "job:sync", settings["sync_interval_minutes"]):
         db.set_kv(conn, "job:sync", db.iso(db.now()))
@@ -70,6 +71,8 @@ def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
             log.exception("Deliverability check crashed")
 
     sender.run_send_cycle(conn, cfg, google)
+    if ms:  # Microsoft rotates refresh tokens on use; keep the newest ones
+        ms.persist_rotated(conn, cfg.secret_key)
 
 
 class Worker:
