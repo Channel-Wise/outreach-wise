@@ -28,7 +28,7 @@ Just bumping this up in case it got buried. Happy to share more details if it's 
 Best,
 <your name>"""
 
-MAX_VARIANTS = 5
+MAX_VARIANTS = 8
 
 
 # --- template variables ---------------------------------------------------------------------
@@ -89,9 +89,21 @@ def steps_with_variants(conn: sqlite3.Connection, campaign_id: int) -> list[dict
         dict(s)
         for s in conn.execute("SELECT * FROM steps WHERE campaign_id = ? ORDER BY position", (campaign_id,))
     ]
+    links: dict[int, dict[int, int]] = {}
+    for variant_id, parent_id, weight in conn.execute(
+        "SELECT l.variant_id, l.parent_id, l.weight FROM variant_links l JOIN variants v ON v.id = l.variant_id"
+        " JOIN steps s ON s.id = v.step_id WHERE s.campaign_id = ? ORDER BY l.parent_id",
+        (campaign_id,),
+    ):
+        links.setdefault(variant_id, {})[parent_id] = weight
     for step in steps:
         step["variants"] = [
             dict(v)
+            | {
+                "parents": list(links.get(v["id"], {})),
+                # JSON object keys are strings; the canvas reads link_weights[String(parentId)].
+                "link_weights": {str(k): w for k, w in links.get(v["id"], {}).items()},
+            }
             for v in conn.execute("SELECT * FROM variants WHERE step_id = ? ORDER BY label", (step["id"],))
         ]
     return steps
@@ -128,22 +140,77 @@ def delete_step(conn: sqlite3.Connection, step_id: int) -> str | None:
     return None
 
 
-def add_variant(conn: sqlite3.Connection, step_id: int) -> str | None:
+def _previous_step_variant(conn: sqlite3.Connection, step_id: int, variant_id: int) -> bool:
+    """Is variant_id a variant of the step right before step_id (same campaign)?"""
+    return (
+        conn.execute(
+            "SELECT 1 FROM variants v JOIN steps p ON p.id = v.step_id JOIN steps s ON s.id = ?"
+            " WHERE v.id = ? AND p.campaign_id = s.campaign_id AND p.position = s.position - 1",
+            (step_id, variant_id),
+        ).fetchone()
+        is not None
+    )
+
+
+def add_variant(conn: sqlite3.Connection, step_id: int, parent_id: int | None = None) -> str | None:
+    """Add an A/B variant; with parent_id it is linked to (only sent after) that previous variant."""
     variants = conn.execute("SELECT * FROM variants WHERE step_id = ? ORDER BY label", (step_id,)).fetchall()
     if len(variants) >= MAX_VARIANTS:
         return f"A step can have at most {MAX_VARIANTS} variants."
+    if parent_id is not None and not _previous_step_variant(conn, step_id, parent_id):
+        return "That variant isn't part of the previous step."
     used = {v["label"] for v in variants}
     label = next(letter for letter in ascii_uppercase if letter not in used)
-    base = variants[0]
-    conn.execute(
+    # Start from a follow-up already linked to the same parent if there is one, else the first variant.
+    sibling = conn.execute(
+        "SELECT v.* FROM variants v JOIN variant_links l ON l.variant_id = v.id"
+        " WHERE v.step_id = ? AND l.parent_id = ? ORDER BY v.label LIMIT 1",
+        (step_id, parent_id),
+    ).fetchone()
+    base = sibling or variants[0]
+    cur = conn.execute(
         "INSERT INTO variants (step_id, label, subject, body) VALUES (?, ?, ?, ?)",
         (step_id, label, base["subject"], base["body"]),
     )
+    if parent_id is not None:
+        conn.execute(
+            "INSERT INTO variant_links (variant_id, parent_id) VALUES (?, ?)", (cur.lastrowid, parent_id)
+        )
+    _rebalance(conn, step_id, cur.lastrowid, parent_id)
+    return None
+
+
+def link(conn: sqlite3.Connection, variant_id: int, parent_id: int, connect: bool = True) -> str | None:
+    """Connect (or disconnect) a follow-up variant to a variant of the previous step.
+
+    A follow-up can be linked to any number of previous variants; one without links goes to
+    everyone whose previous variant has no linked follow-up.
+    """
+    variant = conn.execute("SELECT * FROM variants WHERE id = ?", (variant_id,)).fetchone()
+    if not variant:
+        return "Variant not found."
+    if not _previous_step_variant(conn, variant["step_id"], parent_id):
+        return "You can only connect an email to the follow-up right after it."
+    if connect:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO variant_links (variant_id, parent_id) VALUES (?, ?)",
+            (variant_id, parent_id),
+        )
+        if cur.rowcount:
+            _rebalance(conn, variant["step_id"], variant_id, parent_id)
+    else:
+        conn.execute(
+            "DELETE FROM variant_links WHERE variant_id = ? AND parent_id = ?", (variant_id, parent_id)
+        )
     return None
 
 
 def update_variant(
-    conn: sqlite3.Connection, variant_id: int, subject: str, body: str, active: bool
+    conn: sqlite3.Connection,
+    variant_id: int,
+    subject: str,
+    body: str,
+    active: bool,
 ) -> str | None:
     variant = conn.execute(
         "SELECT v.*, s.position FROM variants v JOIN steps s ON s.id = v.step_id WHERE v.id = ?",
@@ -217,20 +284,77 @@ def count_eligible(conn: sqlite3.Connection, campaign_id: int, include_contacted
     return conn.execute(sql, {"campaign_id": campaign_id}).fetchone()[0]
 
 
+def eligible_leads(
+    conn: sqlite3.Connection, campaign_id: int, include_contacted: bool = True, limit: int = 5000
+) -> list[sqlite3.Row]:
+    """Leads that could be enrolled right now, in sheet order, for the lead picker."""
+    return conn.execute(
+        f"SELECT l.* FROM leads l WHERE l.id IN ({_eligible_sql(include_contacted)}) ORDER BY l.id LIMIT :limit",
+        {"campaign_id": campaign_id, "limit": limit},
+    ).fetchall()
+
+
 def enroll(
-    conn: sqlite3.Connection, campaign_id: int, limit: int | None = None, include_contacted: bool = False
+    conn: sqlite3.Connection,
+    campaign_id: int,
+    limit: int | None = None,
+    include_contacted: bool = False,
+    *,
+    lead_ids: list[int] | None = None,
+    shuffle: bool = False,
 ) -> int:
-    """Enroll eligible leads (never-contacted, not suppressed, not in another active sequence)."""
+    """Enroll eligible leads (never-contacted, not suppressed, not in another active sequence).
+
+    lead_ids restricts enrollment to those leads (ineligible ones are silently skipped);
+    shuffle picks `limit` leads at random instead of the first ones in sheet order.
+    """
     stamp = db.iso(db.now())
+    params: dict = {"campaign_id": campaign_id, "stamp": stamp, "limit": limit if limit else -1}
+    source = f"SELECT id FROM ({_eligible_sql(include_contacted)})"
+    if lead_ids is not None:
+        conn.execute("CREATE TEMP TABLE IF NOT EXISTS picked (id INTEGER PRIMARY KEY)")
+        conn.execute("DELETE FROM picked")
+        conn.executemany("INSERT OR IGNORE INTO picked (id) VALUES (?)", [(int(i),) for i in lead_ids])
+        source += " WHERE id IN (SELECT id FROM picked)"
+    if shuffle:
+        source += " ORDER BY random()"
     cur = conn.execute(
         "INSERT INTO enrollments (campaign_id, lead_id, status, next_step, next_send_at, created_at, updated_at)"
-        f" SELECT :campaign_id, id, 'active', 1, :stamp, :stamp, :stamp FROM ({_eligible_sql(include_contacted)}"
-        " LIMIT :limit)",
-        {"campaign_id": campaign_id, "stamp": stamp, "limit": limit if limit else -1},
+        f" SELECT :campaign_id, id, 'active', 1, :stamp, :stamp, :stamp FROM ({source} LIMIT :limit)",
+        params,
     )
+    if lead_ids is not None:
+        conn.execute("DELETE FROM picked")
     if cur.rowcount:
-        db.log_event(conn, "enroll", f"Enrolled {cur.rowcount} leads", campaign_id=campaign_id)
+        how = "hand-picked" if lead_ids is not None else "random" if shuffle else "in sheet order"
+        db.log_event(conn, "enroll", f"Enrolled {cur.rowcount} leads ({how})", campaign_id=campaign_id)
     return cur.rowcount
+
+
+def unenroll(conn: sqlite3.Connection, campaign_id: int, lead_ids: list[int]) -> int:
+    """Take leads out of a campaign. Leads that already got a real email keep their history
+    (the enrollment is stopped); everyone else is removed as if never enrolled."""
+    removed = 0
+    for lead_id in {int(i) for i in lead_ids}:
+        enrollment = conn.execute(
+            "SELECT * FROM enrollments WHERE campaign_id = ? AND lead_id = ?", (campaign_id, lead_id)
+        ).fetchone()
+        if not enrollment:
+            continue
+        if _live_messages(conn, "enrollment_id", enrollment["id"]):
+            if enrollment["status"] != "active":
+                continue
+            conn.execute(
+                "UPDATE enrollments SET status = 'stopped', stop_reason = 'removed from campaign', updated_at = ?"
+                " WHERE id = ?",
+                (db.iso(db.now()), enrollment["id"]),
+            )
+        else:
+            conn.execute("DELETE FROM enrollments WHERE id = ?", (enrollment["id"],))
+        removed += 1
+    if removed:
+        db.log_event(conn, "enroll", f"Removed {removed} leads from the campaign", campaign_id=campaign_id)
+    return removed
 
 
 def auto_enroll(conn: sqlite3.Connection) -> int:
@@ -287,40 +411,159 @@ def p_value(successes_a: int, n_a: int, successes_b: int, n_b: int) -> float:
 MIN_SAMPLE = 30
 
 
-def ab_results(conn: sqlite3.Connection, campaign: sqlite3.Row) -> list[dict]:
-    rows = conn.execute(
-        """
-        SELECT s.id AS step_id, s.position, v.id, v.label, v.subject, v.active,
-               COUNT(CASE WHEN m.status IN ('sent', 'dry_run') THEN 1 END) AS sent,
-               COUNT(m.replied_at) AS replies
-        FROM variants v JOIN steps s ON s.id = v.step_id
-        LEFT JOIN messages m ON m.variant_id = v.id AND m.mode = ?
-        WHERE s.campaign_id = ?
-        GROUP BY v.id ORDER BY s.position, v.label
-        """,
-        (campaign["mode"], campaign["id"]),
-    ).fetchall()
-    steps: dict[int, dict] = {}
-    for row in rows:
-        step = steps.setdefault(row["step_id"], {"position": row["position"], "variants": [], "verdict": ""})
-        rate = row["replies"] / row["sent"] if row["sent"] else 0.0
-        step["variants"].append({**dict(row), "rate": rate})
-    for step in steps.values():
-        variants = step["variants"]
-        if len(variants) < 2:
-            continue
-        ranked = sorted(variants, key=lambda v: v["rate"], reverse=True)
-        best, runner_up = ranked[0], ranked[1]
-        if min(v["sent"] for v in variants) < MIN_SAMPLE:
-            step["verdict"] = (
-                f"Collecting data — results are meaningful after {MIN_SAMPLE}+ sends per variant."
+def targets(step: dict, previous_variant_id: int | None) -> list[dict]:
+    """Active variants of `step` that a lead who got `previous_variant_id` can receive.
+
+    previous_variant_id None = the first email (every active variant).
+    """
+    active = [v for v in step["variants"] if v["active"]]
+    if previous_variant_id is None:
+        return active
+    linked = [v for v in active if previous_variant_id in v["parents"]]
+    return linked or [v for v in active if not v["parents"]]
+
+
+def split(step: dict, previous_variant_id: int | None) -> list[tuple[dict, int]]:
+    """(variant, weight) for the leads coming from `previous_variant_id`.
+
+    A connected follow-up uses the weight of that connection; the first email and "everyone
+    else" follow-ups use the variant's own weight. Percentages are weight / sum of weights.
+    """
+    pairs = []
+    for v in targets(step, previous_variant_id):
+        linked = previous_variant_id is not None and previous_variant_id in v["parents"]
+        pairs.append((v, v["link_weights"][str(previous_variant_id)] if linked else v["weight"]))
+    return pairs
+
+
+def _percents(weights: list[int], total: int = 100) -> list[int]:
+    """Whole numbers proportional to `weights` that add up to exactly `total` (largest remainder)."""
+    if not sum(weights):
+        weights = [1] * len(weights)
+    raw = [total * w / sum(weights) for w in weights]
+    out = [int(r) for r in raw]
+    for i in sorted(range(len(raw)), key=lambda i: raw[i] - out[i], reverse=True)[: total - sum(out)]:
+        out[i] += 1
+    return out
+
+
+def _rebalance(conn: sqlite3.Connection, step_id: int, new_variant_id: int, parent_id: int | None) -> None:
+    """Give a newly added variant/connection an equal share; the others keep their proportions."""
+    campaign_id = conn.execute("SELECT campaign_id FROM steps WHERE id = ?", (step_id,)).fetchone()[0]
+    step = next(s for s in steps_with_variants(conn, campaign_id) if s["id"] == step_id)
+    if parent_id is not None or step["position"] == 1:
+        pairs = split(step, parent_id)
+    else:  # an "everyone else" follow-up shares the pool of unconnected variants
+        pairs = [(v, v["weight"]) for v in step["variants"] if v["active"] and not v["parents"]]
+    others = [(v, w) for v, w in pairs if v["id"] != new_variant_id]
+    if not others or len(others) == len(pairs):
+        return
+    if len({w for _, w in others}) == 1:  # was an even split: keep it even
+        _write_split(conn, pairs, parent_id, {v["id"]: 100 for v, _ in pairs})
+        return
+    share = round(100 / len(pairs))
+    percents = dict(
+        zip([v["id"] for v, _ in others], _percents([w for _, w in others], 100 - share), strict=True)
+    )
+    percents[new_variant_id] = share
+    _write_split(conn, pairs, parent_id, percents)
+
+
+def _write_split(
+    conn: sqlite3.Connection, pairs: list, parent_id: int | None, percents: dict[int, int]
+) -> None:
+    """Store shares: on the connection for a linked follow-up, else on the variant itself."""
+    for v, _ in pairs:
+        if parent_id is not None and parent_id in v["parents"]:
+            conn.execute(
+                "UPDATE variant_links SET weight = ? WHERE variant_id = ? AND parent_id = ?",
+                (percents[v["id"]], v["id"], parent_id),
             )
-        elif p_value(best["replies"], best["sent"], runner_up["replies"], runner_up["sent"]) < 0.05:
-            best["winner"] = True
-            step["verdict"] = f"Variant {best['label']} is winning with 95% confidence."
         else:
-            step["verdict"] = "No significant difference yet."
-    return list(steps.values())
+            conn.execute("UPDATE variants SET weight = ? WHERE id = ?", (percents[v["id"]], v["id"]))
+
+
+def set_split(
+    conn: sqlite3.Connection, step_id: int, previous_variant_id: int | None, percents: dict[int, int]
+) -> str | None:
+    """Set how leads coming from `previous_variant_id` (None = first email) are split across
+    the follow-ups they can get. `percents` maps variant id -> share, must cover every target."""
+    step_row = conn.execute("SELECT * FROM steps WHERE id = ?", (step_id,)).fetchone()
+    if not step_row:
+        return "Step not found."
+    step = next(s for s in steps_with_variants(conn, step_row["campaign_id"]) if s["id"] == step_id)
+    if previous_variant_id is not None and not _previous_step_variant(conn, step_id, previous_variant_id):
+        return "That variant isn't part of the previous step."
+    pairs = split(step, previous_variant_id)
+    if {v["id"] for v, _ in pairs} != set(percents):
+        return "The split changed meanwhile — reload and try again."
+    if any(not 0 <= p <= 100 for p in percents.values()):
+        return "Each share must be between 0 and 100%."
+    if sum(percents.values()) != 100:
+        return f"The shares add up to {sum(percents.values())}%, not 100%."
+    _write_split(conn, pairs, previous_variant_id, percents)
+    return None
+
+
+def _variant_counts(conn: sqlite3.Connection, campaign: sqlite3.Row) -> dict[int, tuple[int, int]]:
+    return {
+        row[0]: (row[1], row[2])
+        for row in conn.execute(
+            "SELECT m.variant_id, COUNT(CASE WHEN m.status IN ('sent', 'dry_run') THEN 1 END), COUNT(m.replied_at)"
+            " FROM messages m WHERE m.campaign_id = ? AND m.mode = ? GROUP BY m.variant_id",
+            (campaign["id"], campaign["mode"]),
+        )
+    }
+
+
+def ab_results(conn: sqlite3.Connection, campaign: sqlite3.Row) -> list[dict]:
+    """A/B tests: the variants of a step that receive the same leads compete with each other.
+
+    For the first email that is every variant; for a follow-up it is, per previous variant, the
+    follow-ups those leads can get (previous variants with the same options are merged).
+    """
+    counts = _variant_counts(conn, campaign)
+    tests = []
+    previous: list[dict] = []
+    for step in steps_with_variants(conn, campaign["id"]):
+        groups: dict[tuple, list[str]] = {}
+        if step["position"] == 1:
+            groups[tuple(v["id"] for v in step["variants"])] = []
+        for parent in previous:
+            if parent["active"]:
+                ids = tuple(v["id"] for v in targets(step, parent["id"]))
+                if ids:
+                    groups.setdefault(ids, []).append(parent["label"])
+        for ids, parents in groups.items():
+            variants = []
+            for v in step["variants"]:
+                if v["id"] in ids:
+                    sent, replies = counts.get(v["id"], (0, 0))
+                    variants.append(
+                        {**v, "sent": sent, "replies": replies, "rate": replies / sent if sent else 0.0}
+                    )
+            test = {
+                "position": step["position"],
+                "after_label": ", ".join(parents) or None,
+                "variants": variants,
+            }
+            test["verdict"] = _verdict(variants)
+            tests.append(test)
+        previous = step["variants"]
+    return tests
+
+
+def _verdict(variants: list[dict]) -> str:
+    if len(variants) < 2:
+        return ""
+    ranked = sorted(variants, key=lambda v: v["rate"], reverse=True)
+    best, runner_up = ranked[0], ranked[1]
+    if min(v["sent"] for v in variants) < MIN_SAMPLE:
+        return f"Collecting data — results are meaningful after {MIN_SAMPLE}+ sends per variant."
+    if p_value(best["replies"], best["sent"], runner_up["replies"], runner_up["sent"]) < 0.05:
+        best["winner"] = True
+        return f"Variant {best['label']} is winning with 95% confidence."
+    return "No significant difference yet."
 
 
 # --- preview & approval ---------------------------------------------------------------------
@@ -414,3 +657,50 @@ def go_live(conn: sqlite3.Connection, campaign_id: int) -> int:
         campaign_id=campaign_id,
     )
     return cur.rowcount
+
+
+# --- canvas editor payload ------------------------------------------------------------------
+
+
+def sequence(conn: sqlite3.Connection, campaign: sqlite3.Row) -> list[dict]:
+    """Steps with their variants, links, per-variant results and live counts, as JSON for the canvas."""
+    tests = ab_results(conn, campaign)
+    winners = {v["id"] for t in tests for v in t["variants"] if v.get("winner")}
+    counts = _variant_counts(conn, campaign)
+    queued = dict(
+        conn.execute(
+            "SELECT next_step, COUNT(*) FROM enrollments WHERE campaign_id = ? AND status = 'active'"
+            " GROUP BY next_step",
+            (campaign["id"],),
+        ).fetchall()
+    )
+    steps = steps_with_variants(conn, campaign["id"])
+    labels = {v["id"]: v["label"] for step in steps for v in step["variants"]}
+    previous: list[dict] = []
+    for step in steps:
+        step["queued"] = queued.get(step["position"], 0)
+        step["locked"] = bool(_live_messages(conn, "step_id", step["id"]))
+        for variant in step["variants"]:
+            sent, replies = counts.get(variant["id"], (0, 0))
+            variant.update(
+                parent_labels=[labels[p] for p in variant["parents"] if p in labels],
+                sent=sent,
+                replies=replies,
+                rate=replies / sent if sent else 0.0,
+                winner=variant["id"] in winners,
+                locked=bool(_live_messages(conn, "variant_id", variant["id"])),
+            )
+        step["verdicts"] = [
+            {"after_label": t["after_label"], "verdict": t["verdict"]}
+            for t in tests
+            if t["position"] == step["position"] and t["verdict"] and any(v["sent"] for v in t["variants"])
+        ]
+        # Leads who got a previous variant with no follow-up for them end the sequence here.
+        active_parents = [p for p in previous if p["active"]]
+        step["uncovered"] = [p["label"] for p in active_parents if not targets(step, p["id"])]
+        # An "everyone else" follow-up nobody is left for (every previous variant has its own).
+        reached = {v["id"] for p in active_parents for v in targets(step, p["id"])}
+        for variant in step["variants"]:
+            variant["unreached"] = bool(previous) and variant["active"] and variant["id"] not in reached
+        previous = step["variants"]
+    return steps

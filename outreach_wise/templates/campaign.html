@@ -19,11 +19,18 @@
   </div>
 </div>
 
-{% if dry %}
+{% if campaign.status == "draft" %}
+<ol class="setup">
+  <li class="done"><a href="#sequence"><strong>Write your emails</strong><span>Click an email on the canvas to edit it. Add follow-ups and A/B variants there.</span></a></li>
+  <li class="{{ 'done' if stats.enrolled }}"><a href="#leads"><strong>Choose leads</strong><span>{{ stats.enrolled ~ " enrolled" if stats.enrolled else "Pick them one by one, a random sample, or the first N." }}</span></a></li>
+  <li><a href="#settings"><strong>Start the dry run</strong><span>Nothing is sent. Check the preview, then approve it to go live.</span></a></li>
+</ol>
+{% elif dry %}
 <div class="banner dry">{{ icon("info") }}<span class="grow"><strong>Dry run.</strong> The whole pipeline runs on schedule (window, limits, A/B split, follow-ups, stop rules) but no email leaves. When it looks right, approve it on the preview page; dry-run history is then discarded and the sequence restarts for real.</span></div>
 {% else %}
 <div class="banner live">{{ icon("mail") }}<span class="grow"><strong>Live</strong> since {{ campaign.approved_at | local }}. Real emails go out within your sending window and daily limits.</span></div>
 {% endif %}
+
 
 <div class="stats">
   <div class="stat"><div class="label">Enrolled</div><div class="value">{{ stats.enrolled }}</div><div class="sub">{{ stats.active }} in progress · {{ stats.completed }} finished</div></div>
@@ -33,105 +40,299 @@
   <div class="stat"><div class="label">Stopped</div><div class="value">{{ stats.stopped }}</div><div class="sub">suppressed, missing data…</div></div>
 </div>
 
-{% set tests = ab | rejectattr("verdict", "equalto", "") | list %}
-{% if tests %}
-<div class="card flush" style="margin-bottom:16px">
-  <div class="card-head"><div><h2>A/B results</h2><p>Leads are split evenly between active variants. A reply counts for the last email sent before it.{% if dry %} Replies only exist once live.{% endif %}</p></div></div>
-  {% for t in tests %}
-  <div style="padding:0 18px 4px"><h3>{{ "First email" if t.position == 1 else "Follow-up " ~ (t.position - 1) }}</h3></div>
-  <div class="table-wrap"><table class="table">
-    <thead><tr><th>Variant</th><th>Subject</th><th class="num">Sent</th><th class="num">Replies</th><th style="width:28%">Reply rate</th></tr></thead>
-    <tbody>
-    {% set top_rate = t.variants | map(attribute="rate") | max %}
-    {% for v in t.variants %}
-      <tr>
-        <td class="nowrap"><strong>{{ v.label }}</strong>{% if v.winner %} <span class="badge good">winner</span>{% endif %}{% if not v.active %} <span class="badge">inactive</span>{% endif %}</td>
-        <td class="truncate">{{ v.subject or "Re: (same thread)" }}</td>
-        <td class="num">{{ v.sent }}</td>
-        <td class="num">{{ v.replies }}</td>
-        <td><div class="row" style="gap:8px;flex-wrap:nowrap"><div class="meter" style="flex:1;margin:0"><span style="width:{{ (100 * v.rate / top_rate) if top_rate else 0 }}%"></span></div><span class="num small" style="width:48px">{{ v.rate | pct }}</span></div></td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table></div>
-  <p class="small secondary" style="padding:8px 18px 14px;margin:0">{{ t.verdict }}</p>
-  {% endfor %}
-</div>
-{% endif %}
+<nav class="tabs" role="tablist">
+  <a href="#sequence" role="tab">{{ icon("split") }}Sequence</a>
+  <a href="#leads" role="tab">{{ icon("leads") }}Leads <span class="count">{{ stats.enrolled }}</span></a>
+  <a href="#results" role="tab">{{ icon("activity") }}Results</a>
+  <a href="#settings" role="tab">{{ icon("settings") }}Settings</a>
+</nav>
 
-<div class="cols">
-  <div id="sequence">
-    <div class="row between" style="margin-bottom:10px">
-      <h2>Sequence</h2>
-      <span class="muted small">Plain-text emails · your footer from Settings is appended</span>
+{# ---------------------------------------------------------------- sequence canvas #}
+<section class="tab-panel" id="panel-sequence">
+  <div class="flow" id="flow"
+    data-sequence-url="{{ url_for('campaign_sequence', campaign_id=campaign.id) }}"
+    data-add-step-url="{{ url_for('step_add', campaign_id=campaign.id) }}"
+    data-template-url="{{ url_for('template_create') }}"
+    data-enrolled="{{ stats.enrolled }}" data-active="{{ stats.active }}" data-live="{{ 0 if dry else 1 }}">
+    <div class="flow-viewport" tabindex="0" aria-label="Sequence canvas: drag to pan, Ctrl/⌘ + scroll to zoom">
+      <div class="flow-world"><svg class="flow-edges" aria-hidden="true"></svg></div>
     </div>
-    <div class="card" style="margin-bottom:12px;padding:12px 14px">
-      <div class="small secondary" style="margin-bottom:8px">Variables from your leads — click to insert. Use <code>{{ '{{name|fallback}}' }}</code> for leads with missing data; leads missing a variable without fallback are skipped, never sent a broken email.</div>
-      <div class="chips">{% for v in variables %}<button type="button" class="chip" data-var="{{ v }}">{{ '{{' ~ v ~ '}}' }}</button>{% endfor %}</div>
+    <div class="flow-controls">
+      <button type="button" class="btn sm" data-zoom="in" title="Zoom in">{{ icon("plus") }}</button>
+      <button type="button" class="btn sm" data-zoom="out" title="Zoom out">{{ icon("minus") }}</button>
+      <button type="button" class="btn sm" data-zoom="fit" title="Fit to screen">{{ icon("fit") }}</button>
+      <button type="button" class="btn sm" data-zoom="full" title="Full screen">{{ icon("expand") }}</button>
     </div>
+    <div class="flow-hint muted small">Drag the background to pan · drag an email’s ● onto a follow-up to connect them · click an email to edit</div>
 
-    {% for step in steps %}
-      {% if not loop.first %}
-      <form class="wait" method="post" action="{{ url_for('step_update', step_id=step.id) }}">{{ csrf() }}
-        Wait <input type="number" name="delay_days" min="0" max="365" value="{{ step.delay_days }}" aria-label="Days to wait"> day{{ 's' if step.delay_days != 1 }} without a reply, then
-        <button class="btn sm ghost">Save</button>
-      </form>
-      {% endif %}
-      <div class="step" id="step-{{ step.id }}">
-        <div class="step-head">
-          <span class="step-num">{{ step.position }}</span>
-          <h3>{{ "First email" if step.position == 1 else "Follow-up " ~ (step.position - 1) }}</h3>
-          {% if step.variants | length > 1 %}<span class="badge accent plain">A/B · {{ step.variants | length }} variants</span>{% endif %}
-          <span class="spacer"></span>
-          <form method="post" action="{{ url_for('variant_add', step_id=step.id) }}" class="inline">{{ csrf() }}<button class="btn sm ghost">{{ icon("plus") }}A/B variant</button></form>
-          {% if steps | length > 1 %}
-          <form method="post" action="{{ url_for('step_delete', step_id=step.id) }}" class="inline" onsubmit="return confirm('Delete this step?')">{{ csrf() }}<button class="btn sm ghost danger-text">Delete step</button></form>
-          {% endif %}
+    <aside class="drawer" hidden aria-label="Email editor">
+      <div class="drawer-head">
+        <div class="grow"><div class="muted small" data-d="kicker"></div><h2 data-d="title"></h2></div>
+        <button type="button" class="btn sm ghost" data-d="close" aria-label="Close">{{ icon("close") }}</button>
+      </div>
+
+      <div class="drawer-body" data-view="edit">
+        <div class="row" style="gap:6px;margin-bottom:12px">
+          <button type="button" class="btn sm" data-d="use-template">{{ icon("templates") }}Use a template</button>
+          <button type="button" class="btn sm ghost" data-d="save-template">Save as template</button>
         </div>
-        <div class="step-body">
-          {% for v in step.variants %}
-          <form class="variant {{ 'inactive' if not v.active }}" id="variant-{{ v.id }}" method="post" action="{{ url_for('variant_update', variant_id=v.id) }}">{{ csrf() }}
-            <div class="variant-head">
-              <span class="variant-label">Variant {{ v.label }}</span>
-              {% if step.variants | length > 1 %}<label class="check" style="margin:0"><input type="checkbox" name="active" {{ 'checked' if v.active }}> Active</label>
-              {% else %}<input type="hidden" name="active" value="on">{% endif %}
-              <span class="spacer"></span>
-              {% if step.variants | length > 1 %}<button class="btn sm ghost danger-text" formaction="{{ url_for('variant_delete', variant_id=v.id) }}" formnovalidate onclick="return confirm('Delete variant {{ v.label }}?')">Delete</button>{% endif %}
-              <button class="btn sm primary">Save</button>
-            </div>
-            <div class="field">
-              <label for="subject-{{ v.id }}">Subject</label>
-              <input id="subject-{{ v.id }}" type="text" name="subject" value="{{ v.subject }}" data-insert maxlength="250"
-                placeholder="{{ 'Subject line' if step.position == 1 else 'Leave empty to reply in the same thread (Re: …)' }}" {{ 'required' if step.position == 1 }}>
-            </div>
-            <div class="field" style="margin:0">
-              <label for="body-{{ v.id }}">Body</label>
-              <textarea id="body-{{ v.id }}" name="body" rows="9" required data-insert>{{ v.body }}</textarea>
-            </div>
-          </form>
+        <div class="field">
+          <label for="d-subject">Subject</label>
+          <input id="d-subject" type="text" maxlength="250" data-d="subject">
+          <div class="hint" data-d="subject-hint"></div>
+        </div>
+        <div class="field">
+          <label for="d-body">Body</label>
+          <textarea id="d-body" rows="14" data-d="body"></textarea>
+          <div class="hint">Your footer from Settings is appended. Use <code>{{ '{{name|fallback}}' }}</code> for leads with missing data.</div>
+        </div>
+        <div class="field">
+          <div class="small secondary" style="margin-bottom:6px">Insert a variable</div>
+          <div class="chips">{% for v in variables %}<button type="button" class="chip" data-var="{{ v }}">{{ '{{' ~ v ~ '}}' }}</button>{% endfor %}</div>
+        </div>
+        <p class="branch-help" data-d="branch-info" style="margin:0 0 12px"></p>
+        <label class="check" data-d="active-wrap"><input type="checkbox" data-d="active"> Active — include this variant in the A/B split</label>
+        <div class="drawer-section">
+          <h3>This step</h3>
+          <div class="row" style="gap:6px">
+            <button type="button" class="btn sm" data-d="add-variant">{{ icon("plus") }}Add A/B variant</button>
+            <button type="button" class="btn sm ghost danger-text" data-d="delete-variant">Delete variant</button>
+            <button type="button" class="btn sm ghost danger-text" data-d="delete-step">Delete step</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="drawer-body" data-view="templates" hidden>
+        <button type="button" class="btn sm ghost" data-d="back">← Back to email</button>
+        <input type="search" placeholder="Search templates…" data-d="tpl-search" style="margin:10px 0" aria-label="Search templates">
+        <div class="tpl-list" data-d="tpl-list"></div>
+        <p class="muted small" style="margin-top:12px">Manage them on the <a href="{{ url_for('template_list') }}">Templates</a> page.</p>
+      </div>
+
+      <div class="drawer-body" data-view="save-template" hidden>
+        <button type="button" class="btn sm ghost" data-d="back">← Back to email</button>
+        <p class="secondary small" style="margin:10px 0 14px">Saves the subject and body currently in the editor to your template library.</p>
+        <div class="field"><label for="d-tpl-name">Template name</label><input id="d-tpl-name" type="text" maxlength="120" data-d="tpl-name"></div>
+        <div class="field"><label for="d-tpl-cat">Category</label>
+          <select id="d-tpl-cat" data-d="tpl-cat">{% for c in template_categories %}<option>{{ c }}</option>{% endfor %}</select></div>
+        <button type="button" class="btn primary" data-d="tpl-save">Save to library</button>
+      </div>
+
+      <div class="drawer-foot" data-view-foot="edit">
+        <span class="muted small" data-d="status"></span>
+        <span class="spacer"></span>
+        <button type="button" class="btn primary" data-d="save">Save email</button>
+      </div>
+    </aside>
+    <div class="toast" role="status" aria-live="polite" hidden></div>
+  </div>
+  <p class="muted small" style="margin-top:8px">Leads go through the steps left to right. Each email is a reply in the same thread unless it has its own subject. Follow-ups stop automatically when the lead replies, bounces or unsubscribes; out-of-office replies don't stop the sequence. Active A/B variants split leads evenly.</p>
+</section>
+
+{# ---------------------------------------------------------------- leads #}
+<section class="tab-panel" id="panel-leads">
+  <div class="card" id="picker">
+    <div class="card-head"><div><h2>Add leads</h2><p>{{ picker.leads | selectattr("status", "equalto", "new") | list | length }} never-contacted leads are available (not suppressed, not in another active campaign).</p></div></div>
+    <div class="segmented" role="tablist" style="margin-bottom:14px">
+      <button type="button" class="on" data-how="pick">Pick leads</button>
+      <button type="button" data-how="random">{{ icon("shuffle") }}Random sample</button>
+      <button type="button" data-how="first">First N in sheet order</button>
+    </div>
+
+    <form method="post" action="{{ url_for('campaign_enroll', campaign_id=campaign.id) }}" id="enroll-form">{{ csrf() }}
+      <input type="hidden" name="how" value="pick">
+      <input type="hidden" name="lead_ids" value="">
+
+      <div data-how-panel="pick">
+        <div class="toolbar">
+          <input type="search" placeholder="Search name, email, any column…" data-p="search" aria-label="Search leads">
+          <label class="check" style="margin:0"><input type="checkbox" data-p="contacted"> Show previously contacted</label>
+          <span class="spacer"></span>
+          <button type="button" class="btn sm" data-p="all">Select all matches</button>
+          <button type="button" class="btn sm ghost" data-p="none">Clear</button>
+        </div>
+        <div class="picker-table table-wrap">
+          <table class="table"><thead></thead><tbody></tbody></table>
+        </div>
+        <p class="muted small" data-p="note" style="margin:8px 0 0"></p>
+      </div>
+
+      <div data-how-panel="random" hidden>
+        <div class="field" style="max-width:280px"><label for="n-random">How many</label><input id="n-random" type="number" min="1" data-p="n" placeholder="e.g. 50"></div>
+        <p class="secondary small">Leads are drawn at random from everyone eligible — useful when your sheet is sorted and you don't want only the top rows.</p>
+      </div>
+      <div data-how-panel="first" hidden>
+        <div class="field" style="max-width:280px"><label for="n-first">How many</label><input id="n-first" type="number" min="1" data-p="n" placeholder="All"></div>
+        <p class="secondary small">Takes leads in the order they appear in your sheet. Leave empty for everyone eligible.</p>
+      </div>
+      <div data-p="contacted-opt" hidden>
+        <label class="check"><input type="checkbox" name="include_contacted"> Also include previously contacted leads who never replied</label>
+      </div>
+
+      <div class="picker-foot">
+        <span class="secondary" data-p="summary"></span>
+        <span class="spacer"></span>
+        <button class="btn primary" data-p="submit">Enroll leads</button>
+      </div>
+    </form>
+    <p class="muted small" style="margin:10px 0 0">Enrolling only queues leads; daily limits decide how fast they're emailed. A lead is never in two active campaigns at once.</p>
+  </div>
+
+  <form class="card flush" id="enrolled" data-ok="Remove" method="post" action="{{ url_for('campaign_unenroll', campaign_id=campaign.id) }}"
+    data-confirm="Remove the selected leads from this campaign? Leads that already got a real email keep their history and are stopped; the rest are removed and can be added again later.">{{ csrf() }}
+    <div class="card-head">
+      <div><h2>In this campaign</h2><p>{{ stats.enrolled }} lead{{ 's' if stats.enrolled != 1 }}{% if enrolled | length >= 500 %} · showing latest 500{% endif %}.</p></div>
+      {% if enrolled %}
+      <div class="row">
+        <input type="search" placeholder="Filter…" data-e="search" aria-label="Filter enrolled leads" style="width:180px">
+        <button class="btn sm ghost danger-text" data-e="remove" disabled>Remove selected</button>
+      </div>
+      {% endif %}
+    </div>
+    {% if enrolled %}
+    <div class="table-wrap" style="max-height:480px;overflow:auto"><table class="table sticky">
+      <thead><tr><th style="width:36px"><input type="checkbox" data-e="all" aria-label="Select all"></th><th>Lead</th><th>Status</th><th>Next step</th><th>Next send</th></tr></thead>
+      <tbody>
+      {% for e in enrolled %}{% set f = e.fields | fields %}{% set nm = f.get('first_name') or f.get('name') or f.get('channel_name') %}
+        <tr data-search="{{ (e.email ~ ' ' ~ (nm or '')) | lower }}">
+          <td><input type="checkbox" name="lead_id" value="{{ e.id }}" aria-label="Select {{ e.email }}"></td>
+          <td><a href="{{ url_for('lead', lead_id=e.id) }}">{{ e.email }}</a>{% if nm %}<div class="muted small">{{ nm }}</div>{% endif %}</td>
+          <td>{{ badge(e.status) }}{% if e.stop_reason %}<div class="muted small">{{ e.stop_reason }}</div>{% endif %}</td>
+          <td>{{ e.next_step if e.status == "active" else "—" }}</td>
+          <td class="nowrap muted">{{ (e.next_send_at | local) if e.status == "active" else "—" }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table></div>
+    {% else %}
+    <div class="empty" style="padding:24px"><p>No leads yet. Add some above.</p></div>
+    {% endif %}
+  </form>
+</section>
+
+{# ---------------------------------------------------------------- results #}
+<section class="tab-panel" id="panel-results">
+  {% set total = stats.enrolled %}
+  {% if not total and not stats.sent %}
+  <div class="card"><div class="empty"><h3>No results yet</h3><p>Enroll leads and start the {{ "dry run" if dry else "campaign" }} — results show up here as emails go out.{% if dry %} Replies only exist once live.{% endif %}</p></div></div>
+  {% else %}
+  <div class="cols-even" style="margin-bottom:16px">
+    <div class="card">
+      <div class="card-head"><div><h2>Where leads are now</h2><p>{{ total }} enrolled lead{{ 's' if total != 1 }}.</p></div></div>
+      {% set parts = [
+        ("In progress", stats.active, "s-active"), ("Replied", stats.replied, "s-replied"),
+        ("Finished, no reply", stats.completed, "s-done"), ("Bounced", stats.bounced, "s-bounced"),
+        ("Unsubscribed", stats.unsubscribed, "s-unsub"), ("Stopped", stats.stopped, "s-stopped"),
+      ] %}
+      <div class="stackbar" role="img" aria-label="{% for label, n, _ in parts %}{{ label }} {{ n }}{{ ', ' if not loop.last }}{% endfor %}">
+        {% for label, n, cls in parts if n %}<span class="{{ cls }}" style="flex:{{ n }}" title="{{ label }}: {{ n }}"></span>{% endfor %}
+      </div>
+      <ul class="legend-list">
+        {% for label, n, cls in parts %}
+        <li class="{{ 'zero' if not n }}"><i class="{{ cls }}"></i><span>{{ label }}</span><strong class="num">{{ n }}</strong><span class="muted num">{{ ((100 * n / total) | round(0) | int) if total else 0 }}%</span></li>
+        {% endfor %}
+      </ul>
+    </div>
+
+    <div class="card">
+      <div class="card-head"><div><h2>Sequence funnel</h2><p>Emails {{ "that would have gone out" if dry else "sent" }} per step, and replies they got.</p></div>
+        <div class="legend"><span><i class="k-sent"></i>{{ "Would send" if dry else "Sent" }}</span><span><i class="k-reply"></i>Replied</span></div></div>
+      <div class="funnel">
+        {% for f in report.funnel %}
+        <div class="funnel-row" tabindex="0">
+          <div class="funnel-label"><span class="step-num">{{ f.position }}</span>{{ "First email" if f.position == 1 else "Follow-up " ~ (f.position - 1) }}</div>
+          <div class="funnel-bar"><span class="k-sent" style="width:{{ 100 * f.sent / report.funnel_top }}%"><span class="k-reply" style="width:{{ (100 * f.replies / f.sent) if f.sent else 0 }}%"></span></span></div>
+          <div class="funnel-num num"><strong>{{ f.sent }}</strong> · {{ f.replies }} · {{ f.rate | pct }}</div>
+          <div class="chart-tip"><b>{{ "First email" if f.position == 1 else "Follow-up " ~ (f.position - 1) }}</b><br>{{ f.sent }} {{ "would send" if dry else "sent" }} · {{ f.replies }} replies · {{ f.rate | pct }} reply rate</div>
+        </div>
+        {% endfor %}
+      </div>
+      <p class="muted small" style="margin:10px 0 0">sent · replies · reply rate. A reply counts for the last email sent before it.</p>
+    </div>
+  </div>
+
+  <div class="card" style="margin-bottom:16px">
+    <div class="card-head"><div><h2>Daily activity</h2><p>Last {{ report.daily | length }} days{% if dry %} (dry run: emails that would have gone out){% endif %}.</p></div>
+      <div class="legend"><span><i class="k-sent"></i>{{ "Would send" if dry else "Sent" }}</span><span><i class="k-reply"></i>Replies</span></div></div>
+    <div class="chart" role="img" aria-label="Emails sent and replies per day">
+      <div class="chart-y">{% for tick in [report.daily_top, report.daily_top // 2, 0] %}<span style="bottom:{{ 100 * tick / report.daily_top }}%">{{ tick }}</span>{% endfor %}</div>
+      <div class="chart-plot">
+        <div class="chart-grid"><i style="bottom:100%"></i><i style="bottom:50%"></i><i class="base" style="bottom:0"></i></div>
+        <div class="chart-cols">
+          {% for day in report.daily %}
+          <div class="chart-col pair" tabindex="0" aria-label="{{ day.weekday }} {{ day.label }}: {{ day.sent }} sent, {{ day.replies }} replies">
+            <div class="bar k-sent {{ 'zero' if not day.sent }}" style="height:{{ 100 * day.sent / report.daily_top }}%"></div>
+            <div class="bar k-reply {{ 'zero' if not day.replies }}" style="height:{{ 100 * day.replies / report.daily_top }}%"></div>
+            <div class="chart-tip"><b>{{ day.weekday }} {{ day.label }}</b><br>{{ day.sent }} {{ "would send" if dry else "sent" }} · {{ day.replies }} replies</div>
+          </div>
           {% endfor %}
         </div>
       </div>
-    {% endfor %}
-    <form method="post" action="{{ url_for('step_add', campaign_id=campaign.id) }}" style="margin-top:12px">{{ csrf() }}
-      <button class="btn block">{{ icon("plus") }}Add follow-up</button>
-    </form>
-    <p class="muted small" style="margin-top:8px">Follow-ups stop automatically when the lead replies, bounces or unsubscribes. Out-of-office replies don't stop the sequence.</p>
+    </div>
+    <div class="chart-x">{% for day in report.daily %}<span>{{ day.label if loop.index0 % ((report.daily | length) // 7 or 1) == 0 else "" }}</span>{% endfor %}</div>
   </div>
 
-  <div class="stack">
+  {% set tests = ab | rejectattr("verdict", "equalto", "") | list %}
+  {% if tests %}
+  <h2 style="margin:4px 0 10px">A/B tests</h2>
+  <div class="ab-grid" style="margin-bottom:16px">
+    {% for t in tests %}
     <div class="card">
-      <div class="card-head"><div><h2>Enroll leads</h2><p>{{ "{:,}".format(eligible) }} eligible: never contacted, not suppressed, not in another active campaign.</p></div></div>
-      <form method="post" action="{{ url_for('campaign_enroll', campaign_id=campaign.id) }}">{{ csrf() }}
-        <div class="field"><label for="limit">How many</label><input id="limit" type="number" name="limit" min="1" placeholder="All {{ eligible }}"></div>
-        {% if eligible_contacted > eligible %}
-        <div class="field"><label class="check"><input type="checkbox" name="include_contacted"> Also include {{ eligible_contacted - eligible }} previously contacted leads who never replied</label></div>
-        {% endif %}
-        <button class="btn primary block" {{ 'disabled' if not eligible_contacted }}>Enroll leads</button>
-      </form>
-      <p class="muted small" style="margin:10px 0 0">Enrolling only queues leads; daily limits decide how fast they're emailed.</p>
+      <div class="card-head"><div><h3>{{ "First email" if t.position == 1 else "Follow-up " ~ (t.position - 1) }}{% if t.after_label %} <span class="muted">· leads who got {{ t.after_label }}</span>{% endif %}</h3>
+        <p>Reply rate per variant{% if dry %} — replies only exist once live{% endif %}.</p></div></div>
+      {% set top_rate = t.variants | map(attribute="rate") | max %}
+      {% for v in t.variants %}
+      <div class="ab-row {{ 'inactive' if not v.active }}" tabindex="0">
+        <span class="variant-pill v-{{ v.label }}">{{ v.label }}</span>
+        <div class="ab-main">
+          <div class="row between" style="gap:6px;flex-wrap:nowrap"><span class="truncate small secondary">{{ v.subject or "Re: (same thread)" }}</span>
+            <span class="nowrap small">{% if v.winner %}<span class="badge good">winner</span> {% endif %}{% if not v.active %}<span class="badge">inactive</span> {% endif %}<strong>{{ v.rate | pct }}</strong></span></div>
+          <div class="ab-bar"><span class="v-{{ v.label }}" style="width:{{ (100 * v.rate / top_rate) if top_rate else 0 }}%"></span></div>
+          <div class="muted small">{{ v.sent }} sent · {{ v.replies }} repl{{ "y" if v.replies == 1 else "ies" }}</div>
+        </div>
+      </div>
+      {% endfor %}
+      <p class="small secondary" style="margin:10px 0 0">{{ t.verdict }}</p>
     </div>
+    {% endfor %}
+  </div>
+  {% endif %}
+  {% endif %}
 
+  <div class="cols">
+    <div class="card flush">
+      <div class="card-head"><div><h2>{{ "Dry-run log" if dry else "Recent emails" }}</h2><p>Latest 15.</p></div></div>
+      {% if messages %}
+      <div class="table-wrap"><table class="table">
+        <thead><tr><th>When</th><th>Lead</th><th>Step</th><th>Subject</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for m in messages %}
+          <tr>
+            <td class="nowrap muted">{{ (m.sent_at or m.created_at) | local }}</td>
+            <td><a href="{{ url_for('lead', lead_id=m.lead_id) }}">{{ m.to_email }}</a></td>
+            <td>{{ m.position }}{{ m.label }}</td>
+            <td class="truncate">{{ m.subject }}</td>
+            <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table></div>
+      {% else %}
+      <div class="empty" style="padding:24px"><p>{{ "Start the dry run and enroll leads — the worker picks them up within your sending window." if campaign.status != "active" else "Nothing yet. The worker sends within your sending window (" ~ settings.window_start ~ "–" ~ settings.window_end ~ " " ~ settings.timezone ~ ")." }}</p></div>
+      {% endif %}
+    </div>
+    <div class="card">
+      <div class="card-head"><h2>Why leads stopped</h2></div>
+      {% if stop_reasons %}
+      <ul class="list">{% for r in stop_reasons %}<li class="row between"><span class="small">{{ r.stop_reason or "—" }}</span><strong class="num">{{ r.n }}</strong></li>{% endfor %}</ul>
+      {% else %}<p class="muted small">No stopped leads.</p>{% endif %}
+    </div>
+  </div>
+</section>
+
+{# ---------------------------------------------------------------- settings #}
+<section class="tab-panel" id="panel-settings">
+  <div class="cols-even">
     <form class="card" method="post" action="{{ url_for('campaign_settings', campaign_id=campaign.id) }}">{{ csrf() }}
       <div class="card-head"><h2>Campaign settings</h2></div>
       <div class="field"><label for="name">Name</label><input id="name" type="text" name="name" value="{{ campaign.name }}" maxlength="120"></div>
@@ -143,58 +344,31 @@
       </div>
       <button class="btn">Save settings</button>
     </form>
-
-    {% if stop_reasons %}
-    <div class="card">
-      <div class="card-head"><h2>Why leads stopped</h2></div>
-      <ul class="list">{% for r in stop_reasons %}<li class="row between"><span class="small">{{ r.stop_reason or "—" }}</span><strong class="num">{{ r.n }}</strong></li>{% endfor %}</ul>
+    <div class="stack">
+      <div class="card">
+        <div class="card-head"><div><h2>Run it</h2><p>{{ "A dry run goes through the whole schedule without sending. Approve it on the preview page to go live." if dry else "Pause to stop all sends from this campaign." }}</p></div></div>
+        <div class="row">
+          <form method="post" action="{{ url_for('campaign_status', campaign_id=campaign.id) }}" class="inline">{{ csrf() }}
+            {% if campaign.status == "draft" %}<button class="btn primary" name="action" value="start">{{ icon("play") }}Start dry run</button>
+            {% elif campaign.status == "active" %}<button class="btn" name="action" value="pause">{{ icon("pause") }}Pause</button>
+            {% else %}<button class="btn" name="action" value="resume">{{ icon("play") }}Resume</button>{% endif %}
+          </form>
+          <a class="btn" href="{{ url_for('campaign_preview', campaign_id=campaign.id) }}">{{ icon("eye") }}Preview</a>
+        </div>
+      </div>
+      <form class="card" method="post" action="{{ url_for('campaign_delete', campaign_id=campaign.id) }}" data-confirm="Delete this campaign and its dry-run history?">{{ csrf() }}
+        <div class="card-head"><div><h2>Delete campaign</h2><p>{{ "Only possible before any real email was sent. Pause instead to keep history." if not dry else "Removes the campaign and its dry-run history." }}</p></div></div>
+        <button class="btn ghost danger-text" {{ 'disabled' if not dry }}>Delete campaign</button>
+      </form>
     </div>
-    {% endif %}
-
-    <form class="card" method="post" action="{{ url_for('campaign_delete', campaign_id=campaign.id) }}" onsubmit="return confirm('Delete this campaign and its dry-run history?')">{{ csrf() }}
-      <div class="card-head"><div><h2>Delete campaign</h2><p>{{ "Only possible before any real email was sent. Pause instead to keep history." if not dry else "Removes the campaign and its dry-run history." }}</p></div></div>
-      <button class="btn ghost danger-text" {{ 'disabled' if not dry }}>Delete campaign</button>
-    </form>
   </div>
-</div>
+</section>
 
-<div class="card flush" style="margin-top:16px">
-  <div class="card-head"><div><h2>{{ "Dry-run log" if dry else "Recent emails" }}</h2><p>Latest 15.</p></div></div>
-  {% if messages %}
-  <div class="table-wrap"><table class="table">
-    <thead><tr><th>When</th><th>Lead</th><th>Step</th><th>Subject</th><th>Status</th></tr></thead>
-    <tbody>
-    {% for m in messages %}
-      <tr>
-        <td class="nowrap muted">{{ (m.sent_at or m.created_at) | local }}</td>
-        <td><a href="{{ url_for('lead', lead_id=m.lead_id) }}">{{ m.to_email }}</a></td>
-        <td>{{ m.position }}{{ m.label }}</td>
-        <td class="truncate">{{ m.subject }}</td>
-        <td>{{ badge(m.status) }}{% if m.replied_at %} {{ badge('replied') }}{% endif %}</td>
-      </tr>
-    {% endfor %}
-    </tbody>
-  </table></div>
-  {% else %}
-  <div class="empty" style="padding:24px"><p>{{ "Start the dry run and enroll leads — the worker picks them up within your sending window." if campaign.status != "active" else "Nothing yet. The worker sends within your sending window (" ~ settings.window_start ~ "–" ~ settings.window_end ~ " " ~ settings.timezone ~ ")." }}</p></div>
-  {% endif %}
-</div>
+{% for name in ["leads", "plus", "clock", "flag", "mail", "trash", "close"] %}<template id="icon-{{ name }}">{{ icon(name) }}</template>{% endfor %}
+<script type="application/json" id="flow-data">{{ {"steps": sequence, "stats": stats, "templates": templates, "csrf": csrf_token} | tojson }}</script>
+<script type="application/json" id="picker-data">{{ picker | tojson }}</script>
 {% endblock %}
 
 {% block scripts %}
-<script>
-  // Insert {{variable}} at the cursor of the last focused subject/body field.
-  let target = null;
-  document.querySelectorAll("[data-insert]").forEach((el) => el.addEventListener("focus", () => (target = el)));
-  document.querySelectorAll(".chip[data-var]").forEach((chip) =>
-    chip.addEventListener("click", () => {
-      if (!target) return;
-      const text = "{" + "{" + chip.dataset.var + "}" + "}";
-      const start = target.selectionStart ?? target.value.length;
-      const end = target.selectionEnd ?? start;
-      target.setRangeText(text, start, end, "end");
-      target.focus();
-    })
-  );
-</script>
+<script src="{{ url_for('static', filename='campaign.js') }}"></script>
 {% endblock %}
