@@ -318,6 +318,29 @@ MIGRATIONS = [
         )
     );
     """,
+    """
+    -- Lead lists. A lead (unique by email) can be in several lists. A list is filled from a
+    -- Google Sheet tab (synced), CSV/JSON uploads, or leads added by hand. A campaign can take
+    -- its leads from one list (the picker's default and the auto-enroll scope).
+    CREATE TABLE lead_lists (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        sheet_url TEXT NOT NULL DEFAULT '',
+        sheet_tab TEXT NOT NULL DEFAULT '',
+        sheet_email_column TEXT NOT NULL DEFAULT 'email',
+        sheet_columns TEXT NOT NULL DEFAULT '',
+        last_sync TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE TABLE lead_list_members (
+        list_id INTEGER NOT NULL REFERENCES lead_lists(id) ON DELETE CASCADE,
+        lead_id INTEGER NOT NULL REFERENCES leads(id) ON DELETE CASCADE,
+        added_at TEXT NOT NULL,
+        PRIMARY KEY (list_id, lead_id)
+    );
+    CREATE INDEX lead_list_members_lead ON lead_list_members(lead_id);
+    ALTER TABLE campaigns ADD COLUMN list_id INTEGER REFERENCES lead_lists(id) ON DELETE SET NULL;
+    """,
 ]
 
 DEFAULT_SETTINGS = {
@@ -387,6 +410,11 @@ def migrate(conn: sqlite3.Connection) -> None:
         from . import library  # noqa: PLC0415 — avoid an import cycle
 
         library.seed(conn)
+        conn.commit()
+    if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'lead_lists'").fetchone():
+        from . import lists  # noqa: PLC0415 — avoid an import cycle
+
+        lists.adopt_existing(conn)
         conn.commit()
     if conn.execute("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'playbooks'").fetchone():
         from .ai import playbooks  # noqa: PLC0415 — avoid an import cycle

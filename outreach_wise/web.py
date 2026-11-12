@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError, available_timezones
 
 from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, session, url_for
 
-from . import campaigns, db, inbox, library, sender, sheets
+from . import campaigns, db, inbox, library, lists, sender, sheets
 from .config import Config
 from .google import SCOPES, Google, GoogleError
 from .security import encrypt, password_matches, read_unsubscribe_token
@@ -312,8 +312,12 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         c = conn()
         q = request.args.get("q", "").strip()
         status = request.args.get("status", "")
+        list_id = _optional_id(request.args.get("list"))
         page = max(int(request.args.get("page", 1) or 1), 1)
         where, params = [], []
+        if list_id:
+            where.append("id IN (SELECT lead_id FROM lead_list_members WHERE list_id = ?)")
+            params.append(list_id)
         if q:
             where.append("(email LIKE ? OR fields LIKE ?)")
             params += [f"%{q}%", f"%{q}%"]
@@ -331,9 +335,23 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             for key in json.loads(row["fields"]):
                 if key not in columns and "email" not in key and len(columns) < 4:
                     columns.append(key)
-        counts = dict(c.execute("SELECT status, COUNT(*) FROM leads GROUP BY status").fetchall())
+        member_sql = (
+            " WHERE id IN (SELECT lead_id FROM lead_list_members WHERE list_id = ?)" if list_id else ""
+        )
+        counts = dict(
+            c.execute(
+                f"SELECT status, COUNT(*) FROM leads{member_sql} GROUP BY status",
+                (list_id,) if list_id else (),
+            ).fetchall()
+        )
+        all_lists = lists.all_lists(c)
         return render_template(
             "leads.html",
+            list_id=list_id,
+            all_lists=all_lists,
+            list_names={r["id"]: r["name"] for r in all_lists},
+            memberships=lists.lists_of(c, {r["id"] for r in rows}),
+            has_sheet=any(r["sheet_url"] for r in all_lists),
             rows=rows,
             columns=columns,
             total=total,
@@ -354,6 +372,11 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             "lead.html",
             lead=row,
             suppressed=db.is_suppressed(c, row["email"]),
+            in_lists=c.execute(
+                "SELECT ll.id, ll.name FROM lead_lists ll JOIN lead_list_members m ON m.list_id = ll.id"
+                " WHERE m.lead_id = ? ORDER BY ll.name",
+                (lead_id,),
+            ).fetchall(),
             enrollments=c.execute(
                 "SELECT e.*, c.name AS campaign_name, c.mode FROM enrollments e"
                 " JOIN campaigns c ON c.id = e.campaign_id WHERE e.lead_id = ? ORDER BY e.id DESC",
@@ -464,7 +487,8 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             report=_campaign_report(c, row, tz()),
             templates=library.all_templates(c),
             template_categories=library.CATEGORIES,
-            picker=_lead_picker(c, campaign_id),
+            picker=_lead_picker(c, campaign_id, row["list_id"]),
+            all_lists=lists.all_lists(c),
             enrolled=c.execute(
                 "SELECT e.status, e.next_step, e.next_send_at, e.stop_reason, l.id, l.email, l.fields"
                 " FROM enrollments e JOIN leads l ON l.id = e.lead_id WHERE e.campaign_id = ?"
@@ -497,9 +521,13 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             except ValueError:
                 flash("Invalid start date.", "error")
                 return redirect(url_for("campaign", campaign_id=campaign_id))
+        list_id = _optional_id(request.form.get("list_id"))
+        if list_id and not lists.get(c, list_id):
+            list_id = None
         c.execute(
-            "UPDATE campaigns SET name = COALESCE(NULLIF(?, ''), name), auto_enroll = ?, start_at = ? WHERE id = ?",
-            (name, int(request.form.get("auto_enroll") == "on"), start_at, campaign_id),
+            "UPDATE campaigns SET name = COALESCE(NULLIF(?, ''), name), auto_enroll = ?, start_at = ?, list_id = ?"
+            " WHERE id = ?",
+            (name, int(request.form.get("auto_enroll") == "on"), start_at, list_id, campaign_id),
         )
         c.commit()
         flash("Campaign settings saved.", "success")
@@ -529,6 +557,7 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         limit = request.form.get("limit", "").strip()
         limit_n = int(limit) if limit.isdigit() and int(limit) > 0 else None
         include_contacted = request.form.get("include_contacted") == "on"
+        list_id = _optional_id(request.form.get("list_id"))
         if how == "pick":
             ids = [int(i) for i in request.form.get("lead_ids", "").split(",") if i.strip().isdigit()]
             if not ids:
@@ -538,7 +567,12 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
             count = campaigns.enroll(c, campaign_id, include_contacted=True, lead_ids=ids)
         else:
             count = campaigns.enroll(
-                c, campaign_id, limit_n, include_contacted=include_contacted, shuffle=how == "random"
+                c,
+                campaign_id,
+                limit_n,
+                include_contacted=include_contacted,
+                shuffle=how == "random",
+                list_id=list_id,
             )
         c.commit()
         flash(f"Enrolled {count} leads.", "success" if count else "info")
@@ -876,16 +910,8 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
         section = form.get("section")
         updates: dict = {}
         try:
-            if section == "sheet":
-                updates = {
-                    "sheet_url": form.get("sheet_url", "").strip(),
-                    "sheet_tab": form.get("sheet_tab", "").strip() or "Sheet1",
-                    "sheet_email_column": form.get("sheet_email_column", "").strip() or "email",
-                    "sheet_columns": ", ".join(
-                        n.strip() for n in form.get("sheet_columns", "").split(",") if n.strip()
-                    ),
-                    "sync_interval_minutes": _bounded(form, "sync_interval_minutes", 5, 1440),
-                }
+            if section == "sheet":  # Google Sheets are set per list now (Leads → Lists)
+                updates = {"sync_interval_minutes": _bounded(form, "sync_interval_minutes", 5, 1440)}
             elif section == "sending":
                 ZoneInfo(form.get("timezone", "UTC"))
                 start, end = form.get("window_start", ""), form.get("window_end", "")
@@ -1042,6 +1068,9 @@ def create_app(cfg: Config, google: Google | None = None) -> Flask:
     from .smtp_web import register as register_smtp  # SMTP/IMAP inboxes + domain health
 
     register_smtp(app, cfg)
+    from .lists_web import register as register_lists  # lead lists and their sources
+
+    register_lists(app, cfg, google)
     return app
 
 
@@ -1116,17 +1145,33 @@ def _campaign_report(conn, campaign, zone: ZoneInfo) -> dict:
     }
 
 
-def _lead_picker(conn, campaign_id: int) -> dict:
-    """Eligible leads for the picker: id, email, status and their sheet columns."""
+def _lead_picker(conn, campaign_id: int, list_id: int | None = None) -> dict:
+    """Eligible leads for the picker: id, email, status, sheet columns and lists; plus the lists
+    to filter by (the campaign's own list first selected)."""
     rows = campaigns.eligible_leads(conn, campaign_id, include_contacted=True)
+    memberships = lists.lists_of(conn)
     leads, columns = [], []
     for row in rows:
         fields = json.loads(row["fields"])
         for key in fields:
             if key not in columns and "email" not in key:
                 columns.append(key)
-        leads.append({"id": row["id"], "email": row["email"], "status": row["status"], "fields": fields})
-    return {"leads": leads, "columns": columns, "capped": len(rows) >= 5000}
+        leads.append(
+            {
+                "id": row["id"],
+                "email": row["email"],
+                "status": row["status"],
+                "fields": fields,
+                "lists": memberships.get(row["id"], []),
+            }
+        )
+    return {
+        "leads": leads,
+        "columns": columns,
+        "capped": len(rows) >= 5000,
+        "lists": [{"id": r["id"], "name": r["name"]} for r in lists.all_lists(conn)],
+        "list_id": list_id,
+    }
 
 
 def _template_variables(conn) -> list[str]:

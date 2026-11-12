@@ -1,72 +1,70 @@
 {% extends "base.html" %}
 {% from "_macros.html" import icon, badge, pager, csrf with context %}
 {% block title %}Leads{% endblock %}
-{% block scripts %}<script>
-(() => {
-  const form = document.getElementById("lead-list");
-  const all = form?.querySelector("[data-l=all]");
-  if (!all) return;
-  const boxes = () => [...form.querySelectorAll('tbody input[name="lead_id"]')];
-  const button = form.querySelector("[data-l=delete]");
-  const summary = form.querySelector("[data-l=summary]");
-  const sync = () => {
-    const n = boxes().filter((b) => b.checked).length;
-    button.disabled = !n;
-    button.lastChild.textContent = n ? `Delete ${n} lead${n === 1 ? "" : "s"}` : "Delete selected";
-    summary.textContent = n ? `${n} selected on this page.` : "Select leads to delete them.";
-    all.checked = n && n === boxes().length;
-  };
-  all.addEventListener("change", () => { boxes().forEach((b) => (b.checked = all.checked)); sync(); });
-  form.addEventListener("change", (e) => { if (e.target.name === "lead_id") sync(); });
-})();
-</script>{% endblock %}
 {% block content %}
+{% set current = all_lists | selectattr("id", "equalto", list_id) | first if list_id else none %}
 <div class="page-head">
   <div>
-    <h1>Leads</h1>
+    <h1>{{ current.name if current else "Leads" }}</h1>
     <p>
-      {% if last_sync %}Last sheet sync {{ last_sync.at | local }}: {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates skipped.
-      {% elif settings.sheet_url %}Not synced yet.
-      {% else %}No Google Sheet configured — <a href="{{ url_for('settings_page') }}#sheet">add one in Settings</a>.{% endif %}
+      {% if current %}A list of {{ "{:,}".format(counts.values() | sum) }} lead{{ 's' if counts.values() | sum != 1 }}. <a href="{{ url_for('lead_list', list_id=current.id) }}">Sources and settings →</a>
+      {% elif last_sync %}Last sheet sync {{ last_sync.at | local }}: {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates skipped.
+      {% elif all_lists %}Every lead from every list.
+      {% else %}No leads yet. <a href="{{ url_for('lead_lists') }}">Create a list</a> from a Google Sheet, a CSV or JSON file, or by adding leads one by one.{% endif %}
     </p>
   </div>
   <div class="actions">
-    {% if settings.sheet_url %}
-    <form method="post" action="{{ url_for('sync_leads') }}" class="inline">{{ csrf() }}<button class="btn">{{ icon("sync") }}Sync now</button></form>
+    {% if has_sheet %}
+    <form method="post" action="{{ url_for('sync_leads') }}" class="inline">{{ csrf() }}<input type="hidden" name="next" value="{{ request.full_path }}"><button class="btn">{{ icon("sync") }}Sync sheets</button></form>
     {% endif %}
+    <a class="btn" href="{{ url_for('lead_lists') }}">{{ icon("leads") }}Lists</a>
   </div>
 </div>
 
-<div class="row between" style="margin-bottom:14px">
+<div class="row between" style="margin-bottom:14px;gap:10px;flex-wrap:wrap">
   <div class="pills">
-    <a href="{{ url_for('leads', q=q) }}" class="{{ 'active' if not status }}">All<span class="count">{{ "{:,}".format(counts.values() | sum) }}</span></a>
+    <a href="{{ url_for('leads', q=q, list=list_id) }}" class="{{ 'active' if not status }}">All<span class="count">{{ "{:,}".format(counts.values() | sum) }}</span></a>
     {% for s in statuses %}
-      <a href="{{ url_for('leads', status=s, q=q) }}" class="{{ 'active' if status == s }}">{{ s | capitalize }}<span class="count">{{ "{:,}".format(counts.get(s, 0)) }}</span></a>
+      <a href="{{ url_for('leads', status=s, q=q, list=list_id) }}" class="{{ 'active' if status == s }}">{{ s | capitalize }}<span class="count">{{ "{:,}".format(counts.get(s, 0)) }}</span></a>
     {% endfor %}
   </div>
   <form method="get" class="row" style="gap:6px">
     {% if status %}<input type="hidden" name="status" value="{{ status }}">{% endif %}
-    <input type="search" name="q" value="{{ q }}" placeholder="Search email or any field" style="width:260px">
+    {% if all_lists %}
+    <select name="list" aria-label="List" onchange="this.form.submit()">
+      <option value="">All lists</option>
+      {% for l in all_lists %}<option value="{{ l.id }}" {{ 'selected' if l.id == list_id }}>{{ l.name }} ({{ l.total }})</option>{% endfor %}
+    </select>
+    {% endif %}
+    <input type="search" name="q" value="{{ q }}" placeholder="Search email or any field" style="width:240px">
   </form>
 </div>
 
-<form class="card flush" id="lead-list" method="post" action="{{ url_for('delete_leads') }}" data-ok="Delete"
-  data-confirm="Delete the selected leads? Their campaign history, dry-run emails and AI fields go with them, and this can't be undone. Leads that already got a real email are kept; suppress those instead. A lead that's still in your sheet comes back as new on the next sync.">{{ csrf() }}
+<form class="card flush" id="lead-list" method="post" action="{{ url_for('delete_leads') }}">{{ csrf() }}
   <input type="hidden" name="next" value="{{ request.full_path }}">
   {% if rows %}
   <div class="bulk-bar">
-    <span class="muted small" data-l="summary">Select leads to delete them.</span>
+    <span class="muted small" data-l="summary">Select leads to add them to a list or delete them.</span>
     <span class="spacer"></span>
-    <button class="btn sm ghost danger-text" data-l="delete" disabled>{{ icon("close") }}Delete selected</button>
+    {% if all_lists %}
+    <select name="list_id" aria-label="List" data-l="target">
+      {% for l in all_lists %}<option value="{{ l.id }}" {{ 'selected' if l.id == list_id }}>{{ l.name }}</option>{% endfor %}
+    </select>
+    <button class="btn sm" formaction="{{ url_for('leads_to_list') }}" name="action" value="add" data-l="action" disabled>Add to list</button>
+    {% if current %}<button class="btn sm" formaction="{{ url_for('leads_to_list') }}" name="action" value="remove" data-l="action" data-l-remove disabled>Remove from {{ current.name }}</button>{% endif %}
+    {% endif %}
+    <button class="btn sm ghost danger-text" data-l="action" disabled data-ok="Delete"
+      data-confirm="Delete the selected leads? Their campaign history, dry-run emails and AI fields go with them, and this can't be undone. Leads that already got a real email are kept; suppress those instead. A lead that's still in a synced sheet comes back as new on the next sync.">{{ icon("close") }}Delete</button>
   </div>
   <div class="table-wrap"><table class="table">
-    <thead><tr><th style="width:36px"><input type="checkbox" data-l="all" aria-label="Select all on this page"></th><th>Email</th>{% for c in columns %}<th>{{ c.replace('_', ' ') }}</th>{% endfor %}<th>Status</th><th>Added</th></tr></thead>
+    <thead><tr><th style="width:36px"><input type="checkbox" data-l="all" aria-label="Select all on this page"></th><th>Email</th>{% for c in columns %}<th>{{ c.replace('_', ' ') }}</th>{% endfor %}{% if all_lists | length > 1 %}<th>Lists</th>{% endif %}<th>Status</th><th>Added</th></tr></thead>
     <tbody>
     {% for lead in rows %}{% set f = lead.fields | fields %}
       <tr>
         <td><input type="checkbox" name="lead_id" value="{{ lead.id }}" aria-label="Select {{ lead.email }}"></td>
         <td><a href="{{ url_for('lead', lead_id=lead.id) }}">{{ lead.email }}</a></td>
         {% for c in columns %}<td class="truncate" style="max-width:220px">{{ f.get(c, '') }}</td>{% endfor %}
+        {% if all_lists | length > 1 %}<td class="list-chips">{% for lid in memberships.get(lead.id, []) %}<a class="badge plain" href="{{ url_for('leads', list=lid) }}">{{ list_names[lid] }}</a>{% endfor %}</td>{% endif %}
         <td>{{ badge(lead.status) }}</td>
         <td class="nowrap muted">{{ lead.created_at | local("%b %d") }}</td>
       </tr>
@@ -76,10 +74,28 @@
   {{ pager(page, pages, 'leads') }}
   {% else %}
   <div class="empty">
-    <h3>{{ "No matching leads" if q or status else "No leads yet" }}</h3>
-    <p>{% if not (q or status) %}Connect a Google Sheet in Settings, or run <code>outreach-wise demo</code> to load fake leads for a dry run.{% endif %}</p>
+    <h3>{{ "No matching leads" if q or status else ("This list is empty" if current else "No leads yet") }}</h3>
+    <p>{% if current %}<a href="{{ url_for('lead_list', list_id=current.id) }}">Add leads to it</a> from a file or one by one{{ ", or sync its sheet" if current.sheet_url }}.{% elif not (q or status) %}<a href="{{ url_for('lead_lists') }}">Create a list</a>, or run <code>outreach-wise demo</code> to load fake leads for a dry run.{% endif %}</p>
   </div>
   {% endif %}
 </form>
-<p class="muted small" style="margin-top:10px">Every sheet column becomes a template variable, e.g. <code>{{ '{{first_name}}' }}</code>. Leads are unique by email; the sheet owns lead data, Outreach Wise owns status.</p>
+<p class="muted small" style="margin-top:10px">Every column becomes a template variable, e.g. <code>{{ '{{first_name}}' }}</code>. Leads are unique by email and can be in several lists; a synced sheet owns the data of its leads, Outreach Wise owns their status.</p>
 {% endblock %}
+{% block scripts %}<script>
+(() => {
+  const form = document.getElementById("lead-list");
+  const all = form?.querySelector("[data-l=all]");
+  if (!all) return;
+  const boxes = () => [...form.querySelectorAll('tbody input[name="lead_id"]')];
+  const buttons = [...form.querySelectorAll("[data-l=action]")];
+  const summary = form.querySelector("[data-l=summary]");
+  const sync = () => {
+    const n = boxes().filter((b) => b.checked).length;
+    buttons.forEach((b) => (b.disabled = !n));
+    summary.textContent = n ? `${n} selected on this page.` : "Select leads to add them to a list or delete them.";
+    all.checked = n && n === boxes().length;
+  };
+  all.addEventListener("change", () => { boxes().forEach((b) => (b.checked = all.checked)); sync(); });
+  form.addEventListener("change", (e) => { if (e.target.name === "lead_id") sync(); });
+})();
+</script>{% endblock %}

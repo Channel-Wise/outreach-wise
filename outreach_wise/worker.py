@@ -30,7 +30,10 @@ def tick(conn: sqlite3.Connection, cfg: Config, google: Google) -> None:
     settings = db.get_settings(conn)
     ms = microsoft.configure(cfg)
 
-    if settings["sheet_url"] and _due(conn, "job:sync", settings["sync_interval_minutes"]):
+    has_sheet = (
+        settings["sheet_url"] or conn.execute("SELECT 1 FROM lead_lists WHERE sheet_url <> ''").fetchone()
+    )
+    if has_sheet and _due(conn, "job:sync", settings["sync_interval_minutes"]):
         db.set_kv(conn, "job:sync", db.iso(db.now()))
         conn.commit()
         try:

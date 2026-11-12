@@ -118,7 +118,7 @@ def test_delete_leads(client, conn, cfg, google, account):
     assert sent
     token = login(client)
     page = client.get("/leads").get_data(as_text=True)
-    assert 'name="lead_id" value="1"' in page and "Delete selected" in page
+    assert 'name="lead_id" value="1"' in page and "Select leads to add them to a list or delete them." in page
     assert 'action="/leads/delete"' in client.get("/leads/2").get_data(as_text=True)
 
     response = client.post(

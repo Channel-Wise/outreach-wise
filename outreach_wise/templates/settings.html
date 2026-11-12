@@ -51,20 +51,9 @@
   {% include "_domain_health.html" %}
 
   <form class="card" id="sheet" method="post" action="{{ url_for('settings_save') }}">{{ csrf() }}<input type="hidden" name="section" value="sheet">
-    <div class="card-head"><div><h2>Lead source</h2><p>A Google Sheet with a header row. It is read with the first connected inbox's Google account, which needs access to the sheet.</p></div>
-      {% if settings.sheet_url %}<button class="btn" formaction="{{ url_for('sync_leads') }}" formnovalidate>{{ icon("sync") }}Sync now</button>{% endif %}
-    </div>
-    <div class="field"><label for="sheet_url">Sheet URL or ID</label><input id="sheet_url" type="text" name="sheet_url" value="{{ settings.sheet_url }}" placeholder="https://docs.google.com/spreadsheets/d/…"></div>
-    <div class="fields-3">
-      <div class="field"><label for="sheet_tab">Tab name</label><input id="sheet_tab" type="text" name="sheet_tab" value="{{ settings.sheet_tab }}"></div>
-      <div class="field"><label for="sheet_email_column">Email column header</label><input id="sheet_email_column" type="text" name="sheet_email_column" value="{{ settings.sheet_email_column }}"></div>
-      <div class="field"><label for="sync_interval_minutes">Sync every (minutes)</label><input id="sync_interval_minutes" type="number" name="sync_interval_minutes" value="{{ settings.sync_interval_minutes }}" min="5" max="1440"></div>
-    </div>
-    <div class="field"><label for="sheet_columns">Column names, if the sheet has no header row</label>
-      <input id="sheet_columns" type="text" name="sheet_columns" value="{{ settings.sheet_columns }}" placeholder="email, first_name, channel_name">
-      <div class="hint">A missing header row is detected automatically (the first row contains an email). Without names, columns become <code>{{ '{{column_b}}' }}</code>, <code>{{ '{{column_c}}' }}</code>… and the email column is found by its contents.</div></div>
-    <div class="row between">
-      <span class="muted small">{% if last_sync %}Last sync {{ last_sync.at | local }} · {{ last_sync.rows }} rows, {{ last_sync.created }} new, {{ last_sync.updated }} updated, {{ last_sync.duplicates }} duplicates, {{ last_sync.invalid }} invalid, {{ last_sync.get('no_email', 0) }} without email{% if last_sync.header is false %} · no header row{% endif %}{% else %}Not synced yet{% endif %}</span>
+    <div class="card-head"><div><h2>Lead sources</h2><p>Leads live in lists, each filled from a Google Sheet tab, CSV or JSON files, or by hand. Set them up on <a href="{{ url_for('lead_lists') }}">Leads → Lists</a>.</p></div></div>
+    <div class="row between" style="align-items:flex-end">
+      <div class="field" style="margin:0;max-width:240px"><label for="sync_interval_minutes">Sync sheets every (minutes)</label><input id="sync_interval_minutes" type="number" name="sync_interval_minutes" value="{{ settings.sync_interval_minutes }}" min="5" max="1440"></div>
       <button class="btn primary">Save</button>
     </div>
   </form>

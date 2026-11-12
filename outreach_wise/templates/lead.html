@@ -80,6 +80,12 @@
         {% endfor %}
       </tbody></table>
     </div>
+    {% if in_lists %}
+    <div class="card">
+      <div class="card-head"><h2>Lists</h2></div>
+      <div class="list-chips">{% for l in in_lists %}<a class="badge plain" href="{{ url_for('leads', list=l.id) }}">{{ l.name }}</a>{% endfor %}</div>
+    </div>
+    {% endif %}
     <div class="card">
       <div class="card-head"><h2>Campaigns</h2></div>
       {% if enrollments %}

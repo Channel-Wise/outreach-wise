@@ -274,6 +274,8 @@ _ELIGIBLE = """
       AND NOT EXISTS (
           SELECT 1 FROM suppressions s
           WHERE s.value = l.email OR s.value = '@' || substr(l.email, instr(l.email, '@') + 1))
+      AND (:list_id IS NULL OR EXISTS (
+          SELECT 1 FROM lead_list_members m WHERE m.lead_id = l.id AND m.list_id = :list_id))
     ORDER BY l.id
 """
 
@@ -282,18 +284,20 @@ def _eligible_sql(include_contacted: bool) -> str:
     return _ELIGIBLE.format(statuses="'new', 'contacted'" if include_contacted else "'new'")
 
 
-def count_eligible(conn: sqlite3.Connection, campaign_id: int, include_contacted: bool = False) -> int:
+def count_eligible(
+    conn: sqlite3.Connection, campaign_id: int, include_contacted: bool = False, list_id: int | None = None
+) -> int:
     sql = f"SELECT COUNT(*) FROM ({_eligible_sql(include_contacted)})"
-    return conn.execute(sql, {"campaign_id": campaign_id}).fetchone()[0]
+    return conn.execute(sql, {"campaign_id": campaign_id, "list_id": list_id}).fetchone()[0]
 
 
 def eligible_leads(
     conn: sqlite3.Connection, campaign_id: int, include_contacted: bool = True, limit: int = 5000
 ) -> list[sqlite3.Row]:
-    """Leads that could be enrolled right now, in sheet order, for the lead picker."""
+    """Leads that could be enrolled right now (from any list), in sheet order, for the lead picker."""
     return conn.execute(
         f"SELECT l.* FROM leads l WHERE l.id IN ({_eligible_sql(include_contacted)}) ORDER BY l.id LIMIT :limit",
-        {"campaign_id": campaign_id, "limit": limit},
+        {"campaign_id": campaign_id, "limit": limit, "list_id": None},
     ).fetchall()
 
 
@@ -305,14 +309,21 @@ def enroll(
     *,
     lead_ids: list[int] | None = None,
     shuffle: bool = False,
+    list_id: int | None = None,
 ) -> int:
     """Enroll eligible leads (never-contacted, not suppressed, not in another active sequence).
 
     lead_ids restricts enrollment to those leads (ineligible ones are silently skipped);
-    shuffle picks `limit` leads at random instead of the first ones in sheet order.
+    shuffle picks `limit` leads at random instead of the first ones in sheet order;
+    list_id only takes leads from that list.
     """
     stamp = db.iso(db.now())
-    params: dict = {"campaign_id": campaign_id, "stamp": stamp, "limit": limit if limit else -1}
+    params: dict = {
+        "campaign_id": campaign_id,
+        "stamp": stamp,
+        "limit": limit if limit else -1,
+        "list_id": list_id,
+    }
     source = f"SELECT id FROM ({_eligible_sql(include_contacted)})"
     if lead_ids is not None:
         conn.execute("CREATE TEMP TABLE IF NOT EXISTS picked (id INTEGER PRIMARY KEY)")
@@ -330,6 +341,9 @@ def enroll(
         conn.execute("DELETE FROM picked")
     if cur.rowcount:
         how = "hand-picked" if lead_ids is not None else "random" if shuffle else "in sheet order"
+        if list_id:
+            name = conn.execute("SELECT name FROM lead_lists WHERE id = ?", (list_id,)).fetchone()
+            how += f", from {name['name']}" if name else ""
         db.log_event(conn, "enroll", f"Enrolled {cur.rowcount} leads ({how})", campaign_id=campaign_id)
     return cur.rowcount
 
@@ -361,10 +375,11 @@ def unenroll(conn: sqlite3.Connection, campaign_id: int, lead_ids: list[int]) ->
 
 
 def auto_enroll(conn: sqlite3.Connection) -> int:
+    """New leads join active auto-enroll campaigns: from the campaign's list, or any list."""
     campaigns = conn.execute(
-        "SELECT id FROM campaigns WHERE auto_enroll = 1 AND status = 'active' ORDER BY id"
+        "SELECT id, list_id FROM campaigns WHERE auto_enroll = 1 AND status = 'active' ORDER BY id"
     )
-    return sum(enroll(conn, row["id"]) for row in campaigns.fetchall())
+    return sum(enroll(conn, row["id"], list_id=row["list_id"]) for row in campaigns.fetchall())
 
 
 # --- stats ----------------------------------------------------------------------------------

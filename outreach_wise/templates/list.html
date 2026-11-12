@@ -1,0 +1,87 @@
+{% extends "base.html" %}
+{% from "_macros.html" import icon, badge, csrf with context %}
+{% block title %}{{ row.name }}{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <p class="small"><a href="{{ url_for('lead_lists') }}">← Lists</a></p>
+    <h1>{{ row.name }}</h1>
+    <p>
+      <a href="{{ url_for('leads', list=row.id) }}">{{ "{:,}".format(total) }} lead{{ 's' if total != 1 }}</a>
+      · {{ "{:,}".format(counts.get('new', 0)) }} never contacted
+      {% if row.sheet_url %} · Google Sheet tab <strong>{{ row.sheet_tab }}</strong>{% endif %}
+    </p>
+  </div>
+  <div class="actions">
+    {% if row.sheet_url %}<form method="post" action="{{ url_for('lead_list_sync', list_id=row.id) }}" class="inline">{{ csrf() }}<button class="btn">{{ icon("sync") }}Sync now</button></form>{% endif %}
+    <a class="btn primary" href="{{ url_for('leads', list=row.id) }}">{{ icon("leads") }}View leads</a>
+  </div>
+</div>
+
+{% if last %}
+<div class="banner {{ 'warn' if last.error else '' }}">{{ icon("alert" if last.error else "info") }}<span class="grow">
+  {% if last.error %}<strong>{{ last.source }} failed</strong> {{ last.at | local }}: {{ last.error }}
+  {% else %}<strong>{{ last.source }}</strong> {{ last.at | local }}: {{ last.rows }} rows, {{ last.created }} new, {{ last.updated }} updated, {{ last.duplicates }} duplicates, {{ last.invalid }} invalid, {{ last.get('no_email', 0) }} without email{% if last.enrolled %}, {{ last.enrolled }} auto-enrolled{% endif %}{% if last.header is false %} · no header row{% endif %}.{% endif %}
+</span></div>
+{% endif %}
+
+<div class="cols">
+  <div class="stack">
+    <form class="card" id="import" method="post" action="{{ url_for('lead_list_import', list_id=row.id) }}" enctype="multipart/form-data">{{ csrf() }}
+      <div class="card-head"><div><h2>Import a file</h2><p>A CSV with a header row, or a JSON list of objects. Every column becomes a <code>{{ '{{variable}}' }}</code>. Leads already in Outreach Wise are updated and added to this list.</p></div></div>
+      <div class="fields-2">
+        <div class="field"><label for="file">CSV or JSON file</label><input id="file" type="file" name="file" accept=".csv,.json,.tsv,.txt,text/csv,application/json" required></div>
+        <div class="field"><label for="email_column">Email column</label><input id="email_column" type="text" name="email_column" value="email"><div class="hint">Also found as email_address, e-mail or mail.</div></div>
+      </div>
+      <details class="hint" style="margin-bottom:12px"><summary>File examples</summary>
+<pre class="mail-body">email,first_name,channel_url
+ayse@example.com,Ayşe,https://www.youtube.com/@ayse</pre>
+<pre class="mail-body">[{"email": "ayse@example.com", "first_name": "Ayşe", "channel_url": "https://www.youtube.com/@ayse"}]</pre>
+      </details>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary">{{ icon("upload") }}Import</button></div>
+    </form>
+
+    <form class="card" id="add" method="post" action="{{ url_for('lead_list_add', list_id=row.id) }}">{{ csrf() }}
+      <div class="card-head"><div><h2>Add a lead</h2><p>One lead by hand. If the email is already a lead, its data is updated and it joins this list.</p></div></div>
+      <div class="field"><label for="add_email">Email</label><input id="add_email" type="email" name="email" required placeholder="name@example.com"></div>
+      <div class="kv-rows">
+        {% for c in (columns or ["first_name", "channel_url"]) %}
+        <div class="kv-row"><input type="text" name="field_name" value="{{ c }}" aria-label="Column name"><input type="text" name="field_value" aria-label="{{ c }}" placeholder="{{ c.replace('_', ' ') }}"></div>
+        {% endfor %}
+        {% for _ in range(2) %}
+        <div class="kv-row"><input type="text" name="field_name" placeholder="other column" aria-label="Column name"><input type="text" name="field_value" placeholder="value" aria-label="Value"></div>
+        {% endfor %}
+      </div>
+      <div class="row" style="justify-content:flex-end;margin-top:12px"><button class="btn primary">Add lead</button></div>
+    </form>
+  </div>
+
+  <div class="stack">
+    <form class="card" id="settings" method="post" action="{{ url_for('lead_list_save', list_id=row.id) }}">{{ csrf() }}
+      <div class="card-head"><div><h2>List settings</h2></div></div>
+      <div class="field"><label for="name">Name</label><input id="name" type="text" name="name" value="{{ row.name }}" maxlength="80" required></div>
+      <h3 class="subhead">Google Sheet</h3>
+      <div class="field"><label for="sheet_url">Sheet URL or ID</label><input id="sheet_url" type="text" name="sheet_url" value="{{ row.sheet_url }}" placeholder="None: files and leads added by hand only"><div class="hint">Synced every {{ settings.sync_interval_minutes }} minutes with the first connected Google inbox.</div></div>
+      <div class="fields-2">
+        <div class="field"><label for="sheet_tab">Tab name</label><input id="sheet_tab" type="text" name="sheet_tab" value="{{ row.sheet_tab or 'Sheet1' }}"></div>
+        <div class="field"><label for="sheet_email_column">Email column header</label><input id="sheet_email_column" type="text" name="sheet_email_column" value="{{ row.sheet_email_column }}"></div>
+      </div>
+      <div class="field"><label for="sheet_columns">Column names, if the sheet has no header row</label><input id="sheet_columns" type="text" name="sheet_columns" value="{{ row.sheet_columns }}" placeholder="email, first_name, channel_url"></div>
+      <div class="row" style="justify-content:flex-end"><button class="btn primary">Save</button></div>
+    </form>
+
+    <div class="card">
+      <div class="card-head"><h2>Campaigns using it</h2></div>
+      {% if campaigns_using %}
+      <ul class="list">{% for c in campaigns_using %}<li class="row between"><a href="{{ url_for('campaign', campaign_id=c.id) }}">{{ c.name }}</a>{% if c.auto_enroll %}<span class="badge plain">auto-enroll</span>{% endif %}</li>{% endfor %}</ul>
+      {% else %}<p class="muted small" style="margin:0">None. Pick this list in a campaign's Leads tab or Settings.</p>{% endif %}
+    </div>
+
+    <form class="card" method="post" action="{{ url_for('lead_list_delete', list_id=row.id) }}" data-ok="Delete list"
+      data-confirm="Delete the list {{ row.name }}? Its leads stay in Leads (and in any other list); campaigns that used it go back to all leads.">{{ csrf() }}
+      <div class="card-head"><div><h2>Delete list</h2><p>Only the list goes; its leads stay.</p></div></div>
+      <button class="btn ghost danger-text">Delete list</button>
+    </form>
+  </div>
+</div>
+{% endblock %}
