@@ -26,6 +26,9 @@ your own Gmail, Google Workspace, Microsoft 365 or SMTP/IMAP inboxes. It stops f
 soon as someone replies, and its dashboard shows what is working. It runs as **one Python
 process with one SQLite file**: no subscription, and your leads stay on your server.
 
+You build sequences on an **n8n-style canvas** where each A/B variant can branch into its own
+follow-ups, and **AI-written variants** can be A/B tested against your own copy.
+
 We built it for Channel Wise's outreach to YouTube creators: thousands of leads in a sheet and a
 few hundred new ones a day. It doesn't depend on any Channel Wise infrastructure, so anyone can
 self-host it.
@@ -83,20 +86,22 @@ Flask with server-rendered pages, plain SQL, no JavaScript build and no heavywei
 <table>
 <tr><td>
 
+#### 🔀 Build sequences on a canvas
+Drag a variant's port onto a follow-up to give it its own next email, and click a % label to
+change a split. Every email shows its sends, replies and reply rate, and a winner is called once
+the difference is significant. Here variant B is written by AI (`{{ai_hook}}`, `{{ai_subject}}`)
+and tested against a hand-written A. The AI only researches leads that land in B.
+
+<img src="docs/screenshots/canvas.png" alt="Sequence canvas: a hand-written variant A and an AI-written variant B, each branching into its own follow-up, then a shared final follow-up">
+
+</td></tr>
+<tr><td>
+
 #### 📊 See what is working
 Sends per day, reply rate, each campaign's numbers and the latest replies, with a link to the
 thread.
 
 <img src="docs/screenshots/dashboard.png" alt="Dashboard with leads, emails sent today, reply rate, a 14-day chart of sends, campaigns and the latest replies">
-
-</td></tr>
-<tr><td>
-
-#### 🔀 Build a sequence and test it
-Steps with `{{variable|fallback}}` templates and A/B variants on any step. Each variant shows its
-reply rate, and a winner is called once the difference is significant.
-
-<img src="docs/screenshots/campaign.png" alt="Campaign page with the sequence editor: an A/B tested first email and two follow-ups">
 
 </td></tr>
 <tr><td>
@@ -118,12 +123,12 @@ and its next free slot.
 |---|---|
 | 📄 **Google Sheets sync** | On a schedule and on demand. Every column becomes a template variable, with or without a header row. Leads are deduplicated by email and their status is tracked (new → contacted → replied / bounced / unsubscribed). |
 | 📨 **Several inboxes** | Gmail / Google Workspace (Gmail API), Microsoft 365 / Outlook.com (OAuth) and any SMTP/IMAP mailbox. New leads are spread across inboxes, and a lead's follow-ups always come from the same inbox, in the same thread. |
-| 🔀 **Campaigns & A/B tests** | Multi-step sequences, fallbacks for missing data, and variants on any step with a significance test on reply rate. |
+| 🔀 **Sequence canvas & A/B tests** | Multi-step sequences on a pan-and-zoom canvas with live counts. Variants on any step with editable splits and a significance test on reply rate, and per-variant follow-ups (A's leads get A's follow-up). The canvas flags leads with no follow-up and follow-ups nobody reaches. |
 | 🕘 **Scheduling** | Sending window, days, timezone and an optional start time. Sends are spread evenly across the window. |
 | 🛑 **Automatic stops** | Replies, bounces and unsubscribes (link, one-click header or an "unsubscribe" reply) end the sequence and update the suppression list. **Check inbox now** looks for them right away. |
 | 📊 **Dashboard** | Daily sends, reply rate, per-campaign performance, A/B results and the latest replies with a link to the thread. |
 | 🛡️ **Guardrails** | Per-inbox daily limits, suppression by email or whole domain, a full activity log, SPF / DKIM / DMARC **domain health** checks and a "pause all sending" switch. |
-| ✨ **AI personalization** | Optional. Playbooks research each lead and write the personal lines, and you approve them in Review. |
+| ✨ **AI personalization** | Optional. Playbooks research each lead and write the personal lines, and you approve them in Review. Use AI fields in one variant to A/B test them against your own copy. |
 
 **Deliberately left out:** open and click tracking (bad for deliverability and privacy), its own
 SMTP relay, multi-user roles and other enterprise features.
