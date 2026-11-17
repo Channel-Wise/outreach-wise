@@ -217,7 +217,12 @@ def file_rows(filename: str, data: bytes) -> list[list[str]]:
     try:
         text = data.decode("utf-8-sig")
     except UnicodeDecodeError:
-        text = data.decode("latin-1")
+        # Older Turkish Excel installs export Windows-1254 CSVs. Decode those before
+        # falling back to Latin-1, which would turn e.g. Ayşe into Ayþe. The marker
+        # bytes are the Turkish letters that differ between the two encodings.
+        turkish_bytes = {0xD0, 0xDD, 0xDE, 0xF0, 0xFD, 0xFE}
+        encoding = "cp1254" if any(byte in turkish_bytes for byte in data) else "latin-1"
+        text = data.decode(encoding)
     name = filename.lower()
     if name.endswith(".json") or text.lstrip().startswith(("[", "{")):
         try:
@@ -247,3 +252,4 @@ def _cell(value) -> str:
     if isinstance(value, (dict, list)):
         return json.dumps(value, ensure_ascii=False)
     return str(value)
+
