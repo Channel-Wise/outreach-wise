@@ -43,7 +43,7 @@ uv run ruff check . && uv run ruff format --check .
 ## Pull requests
 
 1. Keep PRs focused: one change, with a short description of the *why*.
-2. Add or update tests for behavior changes.
+2. Tests are welcome but not required, except for changes to sending code (see *Safety first*).
 3. Update the README if you change configuration, setup or user-facing behavior.
 4. Database changes go in a **new** entry at the end of `MIGRATIONS` in `db.py`. Never edit an
    existing migration.
